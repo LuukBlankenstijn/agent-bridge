@@ -73,8 +73,8 @@ export function requestEvent(event: RequestEvent): PushEvent {
       `the other machine's owner. Only the user can accept it, with the agent-bridge command "accept thread=${event.thread}" ` +
       `(or just "accept" when it is the only conversation waiting). Accepting lets only this conversation through, not the ` +
       `whole machine. If "${event.node}" is the user's own machine, they can instead run ` +
-      `"trust machine=${event.node} fingerprint=${event.fingerprint}" to accept all its conversations, after checking that ` +
-      "fingerprint on that machine. Do not try to accept on their behalf.",
+      `"trust machine=${event.node} fingerprint=${event.fingerprint.slice(0, 11)}" to accept all its conversations, after ` +
+      "checking that the fingerprint starts the same on that machine. Do not try to accept on their behalf.",
     meta: { bridge: "agent-bridge", kind: "request", thread: event.thread, from: event.from, fingerprint: event.fingerprint },
   };
 }

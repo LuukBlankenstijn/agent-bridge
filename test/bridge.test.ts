@@ -307,9 +307,11 @@ describe("agents on two machines", () => {
     await stateAt(laptop, first.id, "held_by_receiver");
     await stateAt(laptop, toB.id, "held_by_receiver");
     assert.match(await command(a, "trust", { machine: "laptop" }), /not verified yet/);
-    assert.match(await command(a, "trust", { machine: "laptop", fingerprint: "AA:BB" }), /no machine "laptop" with certificate/);
+    assert.match(await command(a, "trust", { machine: "laptop", fingerprint: "AA:BB" }), /at least the first 8/);
+    assert.match(await command(a, "trust", { machine: "laptop", fingerprint: "00000000" }), /no machine "laptop" with certificate/);
     const { yourCertificate } = await call(sender, "peers");
-    assert.match(await command(a, "trust", { machine: "laptop", fingerprint: yourCertificate }), /2 held message/);
+    const short = yourCertificate.slice(0, 11).toLowerCase();
+    assert.match(await command(a, "trust", { machine: "laptop", fingerprint: short }), /2 held message/);
     await stateAt(laptop, first.id, "delivered");
     await stateAt(laptop, toB.id, "delivered");
     const direct = await call(sender, "send", { to: "home/a", subject: "", body: "no accept needed" });
