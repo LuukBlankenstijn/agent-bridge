@@ -5,6 +5,10 @@
   "type": "module",
   "license": "MIT",
   "author": "Luuk Blankenstijn",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LuukBlankenstijn/agent-bridge.git"
+  },
   "bin": {
     "agent-bridge": "dist/src/bin.js"
   },
@@ -20,7 +24,8 @@
   },
   "scripts": {
     "build": "tsc -p .",
-    "test": "tsc -p . && node --test 'dist/test/**/*.test.js'"
+    "test": "tsc -p . && node --test 'dist/test/**/*.test.js'",
+    "prepublishOnly": "node -e \"process.env.GITHUB_ACTIONS || (console.error('Publish by creating a GitHub release; CI publishes it.'), process.exit(1))\" && pnpm build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
