@@ -221,6 +221,7 @@ describe("agents on two machines", () => {
     await stateAt(alice, second.id, "held_by_receiver");
     await stateAt(alice, toOther.id, "held_by_receiver");
     assert.ok(!(await call(helper, "inbox")).some((m: { id: string }) => m.id === second.id));
+    await assert.rejects(call(helper, "reply", { id: second.id, body: "sneaking in" }), /no message/);
     assert.equal((await call(other, "inbox")).length, 0);
     assert.deepEqual(
       (await call(other, "peers")).waitingForAcceptance.map((r: { thread: string; held: number }) => [r.thread, r.held]),
@@ -287,7 +288,7 @@ describe("agents on two machines", () => {
     assert.match(await command(desk, "accept", { thread: fakeSent.thread }), /already belongs to another certificate/);
   });
 
-  test("a trusted machine reaches every agent without accepting each conversation, until untrusted", async () => {
+  test("a trusted machine reaches every agent without accepting each conversation, but not revoked threads", async () => {
     const home = await createNode("home");
     const a = await home.agent("a");
     await home.agent("b");
@@ -296,12 +297,23 @@ describe("agents on two machines", () => {
 
     const first = await call(sender, "send", { to: `a@127.0.0.1:${home.config.peerPort}`, subject: "", body: "hi a" });
     await stateAt(laptop, first.id, "held_by_receiver");
-    assert.match(await command(a, "trust", { machine: "laptop" }), /1 held message/);
-    await stateAt(laptop, first.id, "delivered");
+    assert.match(await command(a, "trust", { machine: "laptop" }), /accept one conversation from "laptop" first/);
+    await command(a, "accept", { thread: first.thread });
+
     const toB = await call(sender, "send", { to: "home/b", subject: "", body: "hi b" });
+    await stateAt(laptop, toB.id, "held_by_receiver");
+    assert.match(await command(a, "trust", { machine: "laptop" }), /certificate .*1 held message/s);
     await stateAt(laptop, toB.id, "delivered");
+    const direct = await call(sender, "send", { to: "home/a", subject: "", body: "no accept needed" });
+    await stateAt(laptop, direct.id, "delivered");
+
+    await command(a, "revoke", { thread: direct.thread });
+    const afterRevoke = await call(sender, "reply", { id: direct.id, body: "still trusted?" });
+    await stateAt(laptop, afterRevoke.id, "held_by_receiver");
 
     assert.match(await command(a, "untrust", { machine: "laptop" }), /stop always accepting/);
+    const ongoing = await call(sender, "reply", { id: toB.id, body: "same thread" });
+    await stateAt(laptop, ongoing.id, "delivered");
     const later = await call(sender, "send", { to: "home/b", subject: "", body: "new thread" });
     await stateAt(laptop, later.id, "held_by_receiver");
   });

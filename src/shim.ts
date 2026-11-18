@@ -9,7 +9,7 @@ import {
   ListPromptsRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { ensureSetup, paths, type Config } from "./config.js";
+import { ensureSetup, paths, VERSION, type Config } from "./config.js";
 import { AGENT_HEADER, readEvents } from "./events.js";
 import { connectionRefused, startDetachedDaemon } from "./launch.js";
 
@@ -20,7 +20,7 @@ function headers(config: Config, agent: string): Record<string, string> {
 }
 
 async function connect(config: Config, agent: string): Promise<Client> {
-  const client = new Client({ name: "agent-bridge-stdio", version: "0.2.0" });
+  const client = new Client({ name: "agent-bridge-stdio", version: VERSION });
   await client.connect(
     new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${config.mcpPort}/mcp`), {
       requestInit: { headers: headers(config, agent) },
@@ -63,7 +63,7 @@ export async function runStdioShim(agent: string, dir: string): Promise<void> {
   };
 
   const server = new Server(
-    { name: "agent-bridge", version: "0.2.0" },
+    { name: "agent-bridge", version: VERSION },
     {
       capabilities: { tools: {}, prompts: {}, experimental: { "claude/channel": {} } },
       instructions: client.getInstructions(),

@@ -166,7 +166,7 @@ export class Store {
         name TEXT PRIMARY KEY,
         first_seen TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS trusted_machines (
+      CREATE TABLE IF NOT EXISTS always_accept (
         fingerprint TEXT PRIMARY KEY,
         created TEXT NOT NULL
       );
@@ -340,7 +340,7 @@ export class Store {
       .run(cutoff);
   }
 
-  private conversation(thread: string, agent: string, peer: string): Conversation | undefined {
+  conversation(thread: string, agent: string, peer: string): Conversation | undefined {
     const row = this.db
       .prepare("SELECT * FROM conversations WHERE thread = ? AND agent = ? AND peer = ?")
       .get(thread, agent, peer);
@@ -433,13 +433,13 @@ export class Store {
 
   alwaysAccept(fingerprint: string, always: boolean): boolean {
     const change = always
-      ? this.db.prepare("INSERT OR IGNORE INTO trusted_machines (fingerprint, created) VALUES (?, ?)").run(fingerprint, now())
-      : this.db.prepare("DELETE FROM trusted_machines WHERE fingerprint = ?").run(fingerprint);
+      ? this.db.prepare("INSERT OR IGNORE INTO always_accept (fingerprint, created) VALUES (?, ?)").run(fingerprint, now())
+      : this.db.prepare("DELETE FROM always_accept WHERE fingerprint = ?").run(fingerprint);
     return change.changes > 0;
   }
 
   alwaysAccepts(fingerprint: string): boolean {
-    return this.db.prepare("SELECT 1 FROM trusted_machines WHERE fingerprint = ?").get(fingerprint) !== undefined;
+    return this.db.prepare("SELECT 1 FROM always_accept WHERE fingerprint = ?").get(fingerprint) !== undefined;
   }
 
   forgetPeer(node: string): boolean {
@@ -447,7 +447,7 @@ export class Store {
       .prepare(`UPDATE messages SET state = 'failed', last_error = 'machine was forgotten' WHERE state = 'queued' AND ${OF_NODE("to_addr")}`)
       .run(node, node);
     this.db.prepare(`UPDATE conversations SET status = 'revoked' WHERE ${OF_NODE("peer")}`).run(node, node);
-    this.db.prepare("DELETE FROM trusted_machines WHERE fingerprint IN (SELECT fingerprint FROM peers WHERE node = ?)").run(node);
+    this.db.prepare("DELETE FROM always_accept WHERE fingerprint IN (SELECT fingerprint FROM peers WHERE node = ?)").run(node);
     return this.db.prepare("DELETE FROM peers WHERE node = ?").run(node).changes > 0;
   }
 

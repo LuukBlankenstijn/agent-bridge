@@ -5,7 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { UNTRUSTED_NOTICE, type Bridge, type RequestEvent, type UndeliveredEvent } from "./bridge.js";
-import { assertName, saveConfig } from "./config.js";
+import { assertName, saveConfig, VERSION } from "./config.js";
 import { discover, expandTargets, localRanges, resolveListen, tailscalePeers } from "./discovery.js";
 import { AGENT_HEADER, type PushEvent } from "./events.js";
 import { nodeOf, type Message } from "./store.js";
@@ -100,7 +100,7 @@ const attachmentPaths = z
 export function agentServer(bridge: Bridge, agent: string): McpServer {
   const address = bridge.address(agent);
   const server = new McpServer(
-    { name: "agent-bridge", version: "0.2.0" },
+    { name: "agent-bridge", version: VERSION },
     {
       instructions:
         `You are ${address} on agent-bridge, a mailbox shared with other AI agents. ` +
@@ -319,14 +319,17 @@ export function agentServer(bridge: Bridge, agent: string): McpServer {
     "trust",
     {
       title: "Always accept a machine",
-      description: "Accept every conversation from a machine for all agents here, e.g. your own other laptop. Not for colleagues.",
+      description:
+        "Accept every conversation from a machine for all agents here, e.g. your own other laptop. Not for colleagues. " +
+        "The machine needs one accepted conversation first.",
       argsSchema: { machine: z.string().describe("Machine (node) name") },
     },
     ({ machine }) => {
       try {
-        const released = bridge.trustMachine(machine);
+        const { fingerprint, released } = bridge.trustMachine(machine);
         return prompt(
-          `I made agent-bridge always accept conversations from machine "${machine}". ${released} held message(s) from it were delivered.`,
+          `I made agent-bridge always accept conversations from machine "${machine}" (certificate ${fingerprint}). ` +
+            `${released} held message(s) from it were delivered.`,
         );
       } catch (error) {
         return prompt(`I tried to trust machine "${machine}", but it failed: ${error instanceof Error ? error.message : error}`);

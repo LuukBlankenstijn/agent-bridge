@@ -69,7 +69,7 @@ opencode; omp needs `name=value` arguments).
 |---|---|
 | `accept thread` | Accept one conversation from another machine |
 | `revoke thread` | Stop a conversation; its new messages are held again |
-| `trust machine` | Always accept conversations from this machine (your own machines only) |
+| `trust machine` | Always accept conversations from this machine (your own machines only; accept one of its conversations first) |
 | `untrust machine` | Stop always accepting a machine |
 | `forget machine` | Drop a machine entirely |
 | `pending` | Conversations waiting for you |

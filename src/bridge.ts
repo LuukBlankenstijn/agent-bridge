@@ -160,7 +160,8 @@ export class Bridge extends EventEmitter {
   async send(agent: string, input: SendInput): Promise<SendResult> {
     const from = this.address(agent);
     const original = input.inReplyTo === undefined ? undefined : this.store.message(input.inReplyTo);
-    if (input.inReplyTo !== undefined && (original === undefined || (original.to !== from && original.from !== from))) {
+    const inMailbox = original !== undefined && (original.from === from || (original.to === from && original.state !== "held"));
+    if (input.inReplyTo !== undefined && !inMailbox) {
       throw new Error(`no message ${input.inReplyTo} in your mailbox`);
     }
     if (Buffer.byteLength(input.body) > MAX_BODY_BYTES) {
@@ -221,7 +222,9 @@ export class Bridge extends EventEmitter {
       throw new PeerError(404, `no agent ${m.to} here`);
     }
     if (Buffer.byteLength(m.body) > MAX_BODY_BYTES) throw new PeerError(413, "body too large");
-    const allowed = peer.trusted && (this.store.alwaysAccepts(peer.fingerprint) || this.store.isApproved(m.thread, to.agent, m.from));
+    const alwaysAccepted =
+      this.store.alwaysAccepts(peer.fingerprint) && this.store.conversation(m.thread, to.agent, m.from)?.status !== "revoked";
+    const allowed = peer.trusted && (this.store.isApproved(m.thread, to.agent, m.from) || alwaysAccepted);
     if (allowed) {
       const missing = m.attachments.filter((a) => !this.blobs.has(a.sha256));
       if (missing.length > 0) throw new PeerError(409, `missing attachments: ${missing.map((a) => a.sha256).join(", ")}`);
@@ -230,8 +233,10 @@ export class Bridge extends EventEmitter {
     const message: Message = { ...m, state: allowed ? "delivered" : "held", readAt: null, lastError: null };
     if (this.store.insertMessage(message, peer.fingerprint)) {
       this.store.incoming(m.thread, to.agent, m.from);
-      if (allowed) this.emit("message", message);
-      else if (this.store.heldIn(m.thread, m.to).length === 1) {
+      if (allowed) {
+        this.store.approve(m.thread, to.agent);
+        this.emit("message", message);
+      } else if (this.store.heldIn(m.thread, m.to).length === 1) {
         this.emit("request", {
           agent: to.agent,
           thread: m.thread,
@@ -262,21 +267,18 @@ export class Bridge extends EventEmitter {
     return { peers: accepted.map((c) => c.peer), released: held.length };
   }
 
-  trustMachine(node: string): number {
-    const candidates = this.store.peersNamed(node);
-    const machine = candidates.find((p) => p.trusted) ?? (candidates.length === 1 ? candidates[0] : undefined);
+  trustMachine(node: string): { fingerprint: string; released: number } {
+    const machine = this.store.peer(node);
     if (machine === undefined) {
-      throw new Error(
-        candidates.length === 0
-          ? `agent-bridge does not know machine "${node}"`
-          : `${candidates.length} machines call themselves "${node}"; accept a conversation from the right one first`,
-      );
+      throw new Error(`accept one conversation from "${node}" first, after checking its certificate fingerprint`);
     }
-    this.claimName(machine.fingerprint);
     this.store.alwaysAccept(machine.fingerprint, true);
-    const held = this.store.heldFromMachine(machine.fingerprint);
+    const held = this.store
+      .heldFromMachine(machine.fingerprint)
+      .filter((m) => this.store.conversation(m.thread, splitAddress(m.to).agent, m.from)?.status !== "revoked");
+    for (const m of held) this.store.approve(m.thread, splitAddress(m.to).agent);
     this.release(held);
-    return held.length;
+    return { fingerprint: machine.fingerprint, released: held.length };
   }
 
   untrustMachine(node: string): boolean {

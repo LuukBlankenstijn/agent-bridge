@@ -1,8 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
+import { createRequire } from "node:module";
 import { basename, join } from "node:path";
 import { generateIdentity } from "./tls.js";
+
+export const VERSION: string = createRequire(import.meta.url)("../../package.json").version;
 
 export interface Config {
   node: string;
