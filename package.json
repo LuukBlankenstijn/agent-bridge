@@ -1,0 +1,34 @@
+{
+  "name": "agent-bridge-mcp",
+  "version": "0.2.0",
+  "description": "Peer-to-peer mailbox for AI agents, exposed as an MCP server",
+  "type": "module",
+  "license": "MIT",
+  "author": "Luuk Blankenstijn",
+  "bin": {
+    "agent-bridge": "dist/src/bin.js"
+  },
+  "exports": {
+    "./server": "./dist/src/opencode-plugin.js",
+    "./omp": "./dist/src/omp-extension.js"
+  },
+  "files": [
+    "dist/src"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "tsc -p . && node --test 'dist/test/**/*.test.js'"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "selfsigned": "^5.5.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^7.0.2"
+  }
+}
