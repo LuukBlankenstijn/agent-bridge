@@ -378,8 +378,16 @@ describe("conversation expiry", () => {
     old.db
       .prepare(
         `INSERT INTO messages (id, thread, from_addr, to_addr, subject, body, attachments, created, state)
-         VALUES ('t1', 't1', 'alice/writer', 'bob/helper', '', '', '[]', '2026-01-01T00:00:00Z', 'delivered'),
-                ('r1', 't1', 'bob/helper', 'alice/writer', '', '', '[]', '2026-01-01T00:01:00Z', 'held')`,
+         VALUES ('t1', 't1', 'alice/writer', 'bob/helper', '', '', '[]', '2026-01-01T00:00:00Z', 'delivered')`,
+      )
+      .run();
+    old.addPeer({ node: "bob", url: "https://b", cert: "", fingerprint: "real", trusted: true });
+    old.addPeer({ node: "bob", url: "https://b", cert: "", fingerprint: "fake", trusted: false });
+    old.db
+      .prepare(
+        `INSERT INTO messages (id, thread, from_addr, to_addr, subject, body, attachments, created, state, sender_fp)
+         VALUES ('r1', 't1', 'bob/helper', 'alice/writer', '', '', '[]', '2026-01-01T00:01:00Z', 'held', 'real'),
+                ('f1', 't1', 'bob/helper', 'alice/writer', '', '', '[]', '2026-01-01T00:02:00Z', 'held', 'fake')`,
       )
       .run();
     old.close();
@@ -387,6 +395,7 @@ describe("conversation expiry", () => {
     const upgraded = new Store(file, 24);
     assert.equal(upgraded.isApproved("t1", "writer", "bob/helper"), true);
     assert.equal(upgraded.message("r1")?.state, "delivered");
+    assert.equal(upgraded.message("f1")?.state, "held");
     upgraded.close();
   });
 });

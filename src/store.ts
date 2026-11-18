@@ -181,6 +181,7 @@ export class Store {
       UPDATE messages SET state = 'delivered', receipt_pending = 1 WHERE state = 'held' AND EXISTS (
         SELECT 1 FROM conversations c WHERE c.thread = messages.thread AND c.peer = messages.from_addr
           AND messages.to_addr LIKE '%/' || c.agent AND c.status = 'approved'
+      ) AND EXISTS (SELECT 1 FROM peers p WHERE p.fingerprint = messages.sender_fp AND p.trusted = 1
       );
       UPDATE messages SET state = 'queued' WHERE state = 'awaiting_approval';
     `);
