@@ -378,14 +378,15 @@ describe("conversation expiry", () => {
     old.db
       .prepare(
         `INSERT INTO messages (id, thread, from_addr, to_addr, subject, body, attachments, created, state)
-         VALUES ('t1', 't1', 'alice/writer', 'bob/helper', '', '', '[]', '2026-01-01T00:00:00Z', 'awaiting_approval')`,
+         VALUES ('t1', 't1', 'alice/writer', 'bob/helper', '', '', '[]', '2026-01-01T00:00:00Z', 'delivered'),
+                ('r1', 't1', 'bob/helper', 'alice/writer', '', '', '[]', '2026-01-01T00:01:00Z', 'held')`,
       )
       .run();
     old.close();
 
     const upgraded = new Store(file, 24);
     assert.equal(upgraded.isApproved("t1", "writer", "bob/helper"), true);
-    assert.equal(upgraded.message("t1")?.state, "queued");
+    assert.equal(upgraded.message("r1")?.state, "delivered");
     upgraded.close();
   });
 });

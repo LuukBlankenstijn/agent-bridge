@@ -178,6 +178,10 @@ export class Store {
         SELECT 1 FROM messages m WHERE m.thread = conversations.thread AND m.to_addr = conversations.peer
           AND m.from_addr LIKE '%/' || conversations.agent AND m.state != 'held'
       );
+      UPDATE messages SET state = 'delivered', receipt_pending = 1 WHERE state = 'held' AND EXISTS (
+        SELECT 1 FROM conversations c WHERE c.thread = messages.thread AND c.peer = messages.from_addr
+          AND messages.to_addr LIKE '%/' || c.agent AND c.status = 'approved'
+      );
       UPDATE messages SET state = 'queued' WHERE state = 'awaiting_approval';
     `);
   }
