@@ -1,3 +1,4 @@
+import { X509Certificate } from "node:crypto";
 import { constants, copyFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isAbsolute } from "node:path";
@@ -69,10 +70,11 @@ export function requestEvent(event: RequestEvent): PushEvent {
       `${event.from} on machine "${event.node}" (certificate ${event.fingerprint}) wants to start a conversation with you ` +
       `(thread ${event.thread}, subject "${event.subject}"). Its messages are held until the user accepts this conversation. ` +
       `Tell the user who it is from, the subject, the thread id and the certificate fingerprint so they can check it with ` +
-      `the other machine's owner. Only the user can accept it, with the agent-bridge "accept" command and thread ` +
-      `${event.thread}. Accepting lets only this conversation through, not the whole machine. If "${event.node}" is the ` +
-      `user's own machine, they can instead run the "trust" command for it to accept all its conversations. ` +
-      "Do not try to accept on their behalf.",
+      `the other machine's owner. Only the user can accept it, with the agent-bridge command "accept thread=${event.thread}" ` +
+      `(or just "accept" when it is the only conversation waiting). Accepting lets only this conversation through, not the ` +
+      `whole machine. If "${event.node}" is the user's own machine, they can instead run ` +
+      `"trust machine=${event.node} fingerprint=${event.fingerprint}" to accept all its conversations, after checking that ` +
+      "fingerprint on that machine. Do not try to accept on their behalf.",
     meta: { bridge: "agent-bridge", kind: "request", thread: event.thread, from: event.from, fingerprint: event.fingerprint },
   };
 }
@@ -243,11 +245,15 @@ export function agentServer(bridge: Bridge, agent: string): McpServer {
 
   const peers = () => ({
     you: address,
+    yourCertificate: new X509Certificate(bridge.identity.cert).fingerprint256,
     listed: bridge.store.listedAgents().includes(agent),
     localAgents: bridge.store.agents().map((name) => bridge.address(name)),
-    machines: bridge.store
-      .peers()
-      .map((p) => ({ node: p.node, url: p.url, alwaysAccepted: bridge.store.alwaysAccepts(p.fingerprint) })),
+    machines: bridge.store.peers().map((p) => ({
+      node: p.node,
+      url: p.url,
+      certificate: p.fingerprint,
+      alwaysAccepted: bridge.store.alwaysAccepts(p.fingerprint),
+    })),
     waitingForAcceptance: bridge.store.conversationRequests(address),
   });
 
@@ -286,18 +292,36 @@ export function agentServer(bridge: Bridge, agent: string): McpServer {
     "accept",
     {
       title: "Accept a conversation",
-      description: `Let another machine's agent talk to ${address} in one conversation. Its held messages are delivered.`,
-      argsSchema: { thread: z.string().describe("Thread id") },
+      description:
+        `Let another machine's agent talk to ${address}. Without arguments it accepts the only waiting conversation; ` +
+        "with machine it accepts every conversation now waiting from that machine.",
+      argsSchema: {
+        thread: z.string().optional().describe("Thread id"),
+        machine: z.string().optional().describe("Machine (node) name"),
+      },
     },
-    ({ thread }) => {
-      try {
-        const { peers, released } = bridge.accept(agent, thread);
+    ({ thread, machine }) => {
+      const waiting = bridge.store.conversationRequests(address);
+      const chosen = thread
+        ? [thread]
+        : [...new Set(waiting.filter((r) => !machine || r.node === machine).map((r) => r.thread))];
+      if (!thread && (chosen.length === 0 || (!machine && chosen.length > 1))) {
+        const list = waiting.map((r) => `- thread ${r.thread} from ${r.from}, subject "${r.subject}"`).join("\n");
         return prompt(
-          `I accepted thread ${thread} with ${peers.join(", ")} for ${address}. ${released} held message(s) are now in your inbox.`,
+          chosen.length === 0
+            ? `I tried to accept a conversation for ${address}, but none ${machine ? `from "${machine}" ` : ""}is waiting.`
+            : `Several conversations wait for ${address}; tell me which to accept (accept thread=… or machine=…):\n${list}`,
         );
-      } catch (error) {
-        return prompt(`I tried to accept thread ${thread}, but it failed: ${error instanceof Error ? error.message : error}`);
       }
+      const lines = chosen.map((t) => {
+        try {
+          const { peers, released } = bridge.accept(agent, t);
+          return `I accepted thread ${t} with ${peers.join(", ")} for ${address}; ${released} held message(s) are now in the inbox.`;
+        } catch (error) {
+          return `I tried to accept thread ${t}, but it failed: ${error instanceof Error ? error.message : error}`;
+        }
+      });
+      return prompt(lines.join("\n"));
     },
   );
 
@@ -322,15 +346,18 @@ export function agentServer(bridge: Bridge, agent: string): McpServer {
       title: "Always accept a machine",
       description:
         "Accept every conversation from a machine for all agents here, e.g. your own other laptop. Not for colleagues. " +
-        "The machine needs one accepted conversation first.",
-      argsSchema: { machine: z.string().describe("Machine (node) name") },
+        "Give the certificate fingerprint the first time; check it against that machine's own peers output.",
+      argsSchema: {
+        machine: z.string().describe("Machine (node) name"),
+        fingerprint: z.string().optional().describe("Certificate fingerprint of that machine"),
+      },
     },
-    ({ machine }) => {
+    ({ machine, fingerprint }) => {
       try {
-        const { fingerprint, released } = bridge.trustMachine(machine);
+        const trusted = bridge.trustMachine(machine, fingerprint || undefined);
         return prompt(
-          `I made agent-bridge always accept conversations from machine "${machine}" (certificate ${fingerprint}). ` +
-            `${released} held message(s) from it were delivered.`,
+          `I made agent-bridge always accept conversations from machine "${machine}" (certificate ${trusted.fingerprint}). ` +
+            `${trusted.released} held message(s) from it were delivered.`,
         );
       } catch (error) {
         return prompt(`I tried to trust machine "${machine}", but it failed: ${error instanceof Error ? error.message : error}`);

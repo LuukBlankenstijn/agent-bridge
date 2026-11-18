@@ -68,9 +68,9 @@ opencode; omp needs `name=value` arguments).
 
 | Command | |
 |---|---|
-| `accept thread` | Accept one conversation from another machine |
+| `accept [thread] [machine]` | Accept a conversation from another machine; no arguments accepts the only one waiting, `machine` accepts all waiting from it |
 | `revoke thread` | Stop a conversation; its new messages are held again |
-| `trust machine` | Always accept conversations from this machine (your own machines only; accept one of its conversations first) |
+| `trust machine [fingerprint]` | Always accept conversations from this machine (your own machines only). Pass the fingerprint its `peers` output shows as `yourCertificate` |
 | `untrust machine` | Stop always accepting a machine |
 | `listed on\|off` | Show this agent's name to other machines in `discover` (trusted machines always see all agents) |
 | `forget machine` | Drop a machine entirely |

@@ -286,7 +286,9 @@ describe("agents on two machines", () => {
     });
     assert.equal(upload.status, 403);
 
+    assert.match(await command(desk, "accept"), /Several conversations wait/);
     assert.match(await command(desk, "accept", { thread: realSent.thread }), /1 held message/);
+    assert.match(await command(desk, "accept"), /already belongs to another certificate/);
     assert.deepEqual((await call(desk, "inbox")).map((m: { id: string }) => m.id), [realSent.id]);
     assert.match(await command(desk, "accept", { thread: fakeSent.thread }), /already belongs to another certificate/);
   });
@@ -299,13 +301,14 @@ describe("agents on two machines", () => {
     const sender = await laptop.agent("l");
 
     const first = await call(sender, "send", { to: `a@127.0.0.1:${home.config.peerPort}`, subject: "", body: "hi a" });
-    await stateAt(laptop, first.id, "held_by_receiver");
-    assert.match(await command(a, "trust", { machine: "laptop" }), /accept one conversation from "laptop" first/);
-    await command(a, "accept", { thread: first.thread });
-
     const toB = await call(sender, "send", { to: "home/b", subject: "", body: "hi b" });
+    await stateAt(laptop, first.id, "held_by_receiver");
     await stateAt(laptop, toB.id, "held_by_receiver");
-    assert.match(await command(a, "trust", { machine: "laptop" }), /certificate .*1 held message/s);
+    assert.match(await command(a, "trust", { machine: "laptop" }), /not verified yet/);
+    assert.match(await command(a, "trust", { machine: "laptop", fingerprint: "AA:BB" }), /no machine "laptop" with certificate/);
+    const { yourCertificate } = await call(sender, "peers");
+    assert.match(await command(a, "trust", { machine: "laptop", fingerprint: yourCertificate }), /2 held message/);
+    await stateAt(laptop, first.id, "delivered");
     await stateAt(laptop, toB.id, "delivered");
     const direct = await call(sender, "send", { to: "home/a", subject: "", body: "no accept needed" });
     await stateAt(laptop, direct.id, "delivered");

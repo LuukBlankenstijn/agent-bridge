@@ -267,11 +267,19 @@ export class Bridge extends EventEmitter {
     return { peers: accepted.map((c) => c.peer), released: held.length };
   }
 
-  trustMachine(node: string): { fingerprint: string; released: number } {
-    const machine = this.store.peer(node);
+  trustMachine(node: string, fingerprint?: string): { fingerprint: string; released: number } {
+    const candidates = this.store.peersNamed(node);
+    if (candidates.length === 0) throw new Error(`agent-bridge does not know machine "${node}"; let it send a message here first`);
+    const machine = fingerprint === undefined ? this.store.peer(node) : candidates.find((p) => p.fingerprint === fingerprint);
     if (machine === undefined) {
-      throw new Error(`accept one conversation from "${node}" first, after checking its certificate fingerprint`);
+      throw new Error(
+        fingerprint === undefined
+          ? `"${node}" is not verified yet. Compare the certificate that machine shows in its own agent-bridge peers ` +
+              `output with ${candidates.map((p) => p.fingerprint).join(" or ")}, then run trust again with that fingerprint`
+          : `no machine "${node}" with certificate ${fingerprint} has contacted this one`,
+      );
     }
+    this.claimName(machine.fingerprint);
     this.store.alwaysAccept(machine.fingerprint, true);
     const held = this.store
       .heldFromMachine(machine.fingerprint)
