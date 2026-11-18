@@ -271,7 +271,7 @@ export class Bridge extends EventEmitter {
     const candidates = this.store.peersNamed(node);
     if (candidates.length === 0) throw new Error(`agent-bridge does not know machine "${node}"; let it send a message here first`);
     const typed = fingerprint?.replace(/:/g, "").toUpperCase();
-    if (typed !== undefined && typed.length < 8) throw new Error("give at least the first 8 characters of the fingerprint");
+    if (typed !== undefined && typed.length < 16) throw new Error("give at least the first 16 characters of the fingerprint");
     const matches = candidates.filter((p) => typed !== undefined && p.fingerprint.replace(/:/g, "").startsWith(typed));
     if (matches.length > 1) throw new Error(`fingerprint ${fingerprint} matches ${matches.length} machines; give more of it`);
     const machine = typed === undefined ? this.store.peer(node) : matches[0];
