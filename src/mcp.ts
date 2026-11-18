@@ -302,15 +302,21 @@ export function agentServer(bridge: Bridge, agent: string): McpServer {
     },
     ({ thread, machine }) => {
       const waiting = bridge.store.conversationRequests(address);
-      const chosen = thread
-        ? [thread]
-        : [...new Set(waiting.filter((r) => !machine || r.node === machine).map((r) => r.thread))];
+      const matching = waiting.filter((r) => !machine || r.node === machine);
+      const chosen = thread ? [thread] : [...new Set(matching.map((r) => r.thread))];
+      const list = (requests: typeof waiting) =>
+        requests.map((r) => `- thread ${r.thread} from ${r.from} (certificate ${r.fingerprint}), subject "${r.subject}"`).join("\n");
+      if (!thread && machine && new Set(matching.map((r) => r.fingerprint)).size > 1) {
+        return prompt(
+          `More than one machine calls itself "${machine}"; I did not accept anything. Accept the right thread by id ` +
+            `after checking its certificate:\n${list(matching)}`,
+        );
+      }
       if (!thread && (chosen.length === 0 || (!machine && chosen.length > 1))) {
-        const list = waiting.map((r) => `- thread ${r.thread} from ${r.from}, subject "${r.subject}"`).join("\n");
         return prompt(
           chosen.length === 0
             ? `I tried to accept a conversation for ${address}, but none ${machine ? `from "${machine}" ` : ""}is waiting.`
-            : `Several conversations wait for ${address}; tell me which to accept (accept thread=… or machine=…):\n${list}`,
+            : `Several conversations wait for ${address}; tell me which to accept (accept thread=… or machine=…):\n${list(waiting)}`,
         );
       }
       const lines = chosen.map((t) => {

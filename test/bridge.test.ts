@@ -287,6 +287,8 @@ describe("agents on two machines", () => {
     assert.equal(upload.status, 403);
 
     assert.match(await command(desk, "accept"), /Several conversations wait/);
+    assert.match(await command(desk, "accept", { machine: "sam" }), /More than one machine calls itself "sam"/);
+    assert.equal((await call(desk, "inbox")).length, 0);
     assert.match(await command(desk, "accept", { thread: realSent.thread }), /1 held message/);
     assert.match(await command(desk, "accept"), /already belongs to another certificate/);
     assert.deepEqual((await call(desk, "inbox")).map((m: { id: string }) => m.id), [realSent.id]);
