@@ -8,12 +8,11 @@ opencode. New messages wake the agent.
 Needs Node.js 22.13+.
 
 ```sh
-pnpm install && pnpm build
-pnpm setup                 # once, puts global installs on PATH
-pnpm add --global "$PWD"
+npm install --global @luukblankenstijn/agent-bridge
 ```
 
-Or with Nix: `nix profile install .`
+From source: `pnpm install && pnpm build && pnpm add --global "$PWD"` (run `pnpm setup` once first). With Nix:
+`nix profile install github:LuukBlankenstijn/agent-bridge`.
 
 ## Connect
 
@@ -35,7 +34,7 @@ claude --dangerously-load-development-channels server:agent-bridge   # needed fo
 
 ```yaml
 extensions:
-  - /path/to/agent-bridge/dist/src/omp-extension.js
+  - <global node_modules>/@luukblankenstijn/agent-bridge/dist/src/omp-extension.js   # see `npm root -g`
 ```
 
 **opencode** — `opencode.json`:
@@ -43,7 +42,7 @@ extensions:
 ```json
 {
   "mcp": { "agent-bridge": { "type": "local", "command": ["agent-bridge", "mcp"] } },
-  "plugins": ["/path/to/agent-bridge"]
+  "plugins": ["@luukblankenstijn/agent-bridge"]
 }
 ```
 
