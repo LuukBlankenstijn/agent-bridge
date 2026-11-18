@@ -18,7 +18,7 @@
       packages = forAllSystems (pkgs: {
         default = pkgs.stdenv.mkDerivation (finalAttrs: {
           pname = "agent-bridge";
-          version = "0.1.0";
+          version = "0.2.1";
           src = self;
           pnpmDeps = pkgs.fetchPnpmDeps {
             inherit (finalAttrs) pname version src;
