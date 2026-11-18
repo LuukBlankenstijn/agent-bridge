@@ -46,23 +46,17 @@ function identify(bridge: Bridge, req: IncomingMessage): Peer {
   return bridge.learnPeer(node, cert.fingerprint256, pemOf(cert.raw), peerUrl(req.socket.remoteAddress ?? "", port), false);
 }
 
-function acceptedMachine(bridge: Bridge, peer: Peer): boolean {
-  return peer.trusted && (bridge.store.acceptedByAnyone(peer.fingerprint) || bridge.store.approvedWithNode(peer.node));
-}
-
 async function handle(bridge: Bridge, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const { pathname } = new URL(req.url ?? "/", "https://peer");
 
   if (req.method === "GET" && pathname === "/hello") {
-    const fingerprint = (req.socket as TLSSocket).getPeerCertificate()?.fingerprint256;
-    const caller = fingerprint === undefined ? undefined : bridge.store.peerByFingerprint(fingerprint);
-    const showAgents = caller !== undefined && acceptedMachine(bridge, caller);
-    send(res, 200, { node: bridge.identity.node, ...(showAgents ? { agents: bridge.store.agents() } : {}) });
+    send(res, 200, { node: bridge.identity.node });
     return;
   }
   const peer = identify(bridge, req);
   const blob = /^\/blobs\/([0-9a-f]{64})$/.exec(pathname);
-  if (blob && !acceptedMachine(bridge, peer)) throw new PeerError(403, "attachments are accepted only from accepted machines");
+  const mayUpload = peer.trusted && (bridge.store.alwaysAccepts(peer.fingerprint) || bridge.store.approvedWithNode(peer.node));
+  if (blob && !mayUpload) throw new PeerError(403, "attachments are accepted only in accepted conversations");
   if (blob && req.method === "HEAD") {
     res.writeHead(bridge.blobs.has(blob[1]) ? 200 : 404).end();
     return;

@@ -4,7 +4,7 @@ import { basename, isAbsolute } from "node:path";
 import { z } from "zod";
 import { Blobs } from "./blobs.js";
 import { assertName, loadConfig, MAX_BODY_BYTES, paths, type Config } from "./config.js";
-import { newId, nodeOf, now, Store, type Conversation, type Message, type Peer } from "./store.js";
+import { newId, nodeOf, now, Store, type ConversationRequest, type Message, type Peer } from "./store.js";
 import { fetchCert, peerRequest, type Identity } from "./tls.js";
 
 export const UNTRUSTED_NOTICE =
@@ -23,13 +23,16 @@ export interface SendResult {
   thread: string;
   to: string;
   state: Message["state"];
-  note?: string;
 }
 
-export interface ContactEvent {
+export interface RequestEvent extends ConversationRequest {
   agent: string;
-  node: string;
-  fingerprint: string;
+}
+
+export interface UndeliveredEvent {
+  message: Message;
+  problem: "held" | "failed" | "retrying";
+  error?: string;
 }
 
 const MAX_UNTRUSTED_PEERS = 50;
@@ -185,7 +188,8 @@ export class Bridge extends EventEmitter {
     const thread = original?.thread ?? id;
     const attachments = [];
     for (const file of input.attachments) attachments.push(await this.blobs.addFile(file));
-    const state = local ? "delivered" : this.store.outgoingState(thread, agent, to);
+    const state = local ? "delivered" : "queued";
+    if (!local) this.store.outgoing(thread, agent, to);
     const message: Message = {
       id,
       thread,
@@ -202,18 +206,8 @@ export class Bridge extends EventEmitter {
     };
     this.store.insertMessage(message);
 
-    if (local) this.emit("message", message);
-    if (state === "queued") this.emit("queued");
-    return {
-      id,
-      thread,
-      to,
-      state,
-      note:
-        state === "awaiting_approval"
-          ? `Held until the user approves this conversation with the agent-bridge "approve" command, thread ${thread}.`
-          : undefined,
-    };
+    this.emit(local ? "message" : "queued", message);
+    return { id, thread, to, state };
   }
 
   receive(peer: Peer, payload: unknown): "delivered" | "held" {
@@ -227,9 +221,7 @@ export class Bridge extends EventEmitter {
       throw new PeerError(404, `no agent ${m.to} here`);
     }
     if (Buffer.byteLength(m.body) > MAX_BODY_BYTES) throw new PeerError(413, "body too large");
-    const allowed =
-      peer.trusted &&
-      (this.store.contactAccepted(to.agent, peer.fingerprint) || this.store.isApproved(m.thread, to.agent, m.from));
+    const allowed = peer.trusted && (this.store.alwaysAccepts(peer.fingerprint) || this.store.isApproved(m.thread, to.agent, m.from));
     if (allowed) {
       const missing = m.attachments.filter((a) => !this.blobs.has(a.sha256));
       if (missing.length > 0) throw new PeerError(409, `missing attachments: ${missing.map((a) => a.sha256).join(", ")}`);
@@ -239,48 +231,78 @@ export class Bridge extends EventEmitter {
     if (this.store.insertMessage(message, peer.fingerprint)) {
       this.store.incoming(m.thread, to.agent, m.from);
       if (allowed) this.emit("message", message);
-      else if (this.store.requestContact(to.agent, peer.fingerprint)) {
-        this.emit("contact", { agent: to.agent, node: peer.node, fingerprint: peer.fingerprint });
+      else if (this.store.heldIn(m.thread, m.to).length === 1) {
+        this.emit("request", {
+          agent: to.agent,
+          thread: m.thread,
+          from: m.from,
+          node: peer.node,
+          fingerprint: peer.fingerprint,
+          subject: m.subject,
+          held: 1,
+          created: m.created,
+        });
       }
     }
     return this.store.message(m.id)?.state === "held" ? "held" : "delivered";
   }
 
-  accept(agent: string, node: string, fingerprint?: string): number {
-    const requests = this.store
-      .contactRequests(agent, this.address(agent))
-      .filter((r) => r.node === node && (fingerprint === undefined || r.fingerprint === fingerprint));
-    if (requests.length === 0) throw new Error(`no machine "${node}" is waiting to message ${this.address(agent)}`);
-    if (requests.length > 1) {
+  accept(agent: string, thread: string): { peers: string[]; released: number } {
+    const address = this.address(agent);
+    const requests = this.store.conversationRequests(address).filter((r) => r.thread === thread);
+    const senders = [...new Set(requests.map((r) => r.fingerprint))];
+    if (senders.length > 1) {
+      throw new Error(`thread ${thread} has messages from ${senders.length} different machines; forget the wrong one first`);
+    }
+    for (const fingerprint of senders) this.claimName(fingerprint);
+    const accepted = this.store.approve(thread, agent);
+    if (accepted.length === 0) throw new Error(`${address} has no conversation with thread id ${thread}`);
+    const held = this.store.heldIn(thread, address);
+    this.release(held);
+    return { peers: accepted.map((c) => c.peer), released: held.length };
+  }
+
+  trustMachine(node: string): number {
+    const candidates = this.store.peersNamed(node);
+    const machine = candidates.find((p) => p.trusted) ?? (candidates.length === 1 ? candidates[0] : undefined);
+    if (machine === undefined) {
       throw new Error(
-        `${requests.length} different machines call themselves "${node}"; accept the right one by fingerprint: ` +
-          requests.map((r) => r.fingerprint).join(", "),
+        candidates.length === 0
+          ? `agent-bridge does not know machine "${node}"`
+          : `${candidates.length} machines call themselves "${node}"; accept a conversation from the right one first`,
       );
     }
-    const chosen = requests[0].fingerprint;
+    this.claimName(machine.fingerprint);
+    this.store.alwaysAccept(machine.fingerprint, true);
+    const held = this.store.heldFromMachine(machine.fingerprint);
+    this.release(held);
+    return held.length;
+  }
+
+  untrustMachine(node: string): boolean {
+    const machine = this.store.peer(node);
+    return machine !== undefined && this.store.alwaysAccept(machine.fingerprint, false);
+  }
+
+  private claimName(fingerprint: string): void {
+    const { node } = this.store.peerByFingerprint(fingerprint)!;
     const trustedUnderName = this.store.peer(node);
-    if (trustedUnderName !== undefined && trustedUnderName.fingerprint !== chosen) {
+    if (trustedUnderName !== undefined && trustedUnderName.fingerprint !== fingerprint) {
       throw new Error(`machine name "${node}" already belongs to another certificate; forget that machine first`);
     }
-    this.store.trustPeer(chosen);
-    this.store.acceptContact(agent, chosen);
-    const held = this.store.heldFrom(this.address(agent), chosen);
+    this.store.trustPeer(fingerprint);
+  }
+
+  private release(held: Message[]): void {
     for (const message of held) {
       this.store.release(message.id);
       this.emit("message", { ...message, state: "delivered" });
     }
-    if (held.length > 0) this.emit("queued");
-    return held.length;
-  }
-
-  approve(agent: string, thread: string): Conversation[] {
-    const approved = this.store.approve(thread, agent, this.address(agent));
-    if (approved.length > 0) this.emit("queued");
-    return approved;
+    this.emit("queued");
   }
 
   revoke(agent: string, thread: string): number {
-    return this.store.revoke(thread, agent, this.address(agent));
+    return this.store.revoke(thread, agent);
   }
 
   ack(agent: string, ids: string[]): string[] {

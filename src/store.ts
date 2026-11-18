@@ -1,14 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
 
-export type MessageState =
-  | "awaiting_approval"
-  | "queued"
-  | "held_by_receiver"
-  | "held"
-  | "delivered"
-  | "read"
-  | "failed";
+export type MessageState = "queued" | "held_by_receiver" | "held" | "delivered" | "read" | "failed";
 export type ConversationStatus = "pending" | "approved" | "revoked" | "expired";
 
 export interface Attachment {
@@ -50,9 +43,12 @@ export interface Peer {
   firstSeen: string;
 }
 
-export interface ContactRequest {
+export interface ConversationRequest {
+  thread: string;
+  from: string;
   node: string;
   fingerprint: string;
+  subject: string;
   held: number;
   created: string;
 }
@@ -166,17 +162,16 @@ export class Store {
         first_seen TEXT NOT NULL
       );
       CREATE UNIQUE INDEX IF NOT EXISTS trusted_node ON peers (node) WHERE trusted = 1;
-      CREATE TABLE IF NOT EXISTS contacts (
-        agent TEXT NOT NULL,
-        fingerprint TEXT NOT NULL,
-        status TEXT NOT NULL,
-        created TEXT NOT NULL,
-        PRIMARY KEY (agent, fingerprint)
-      );
       CREATE TABLE IF NOT EXISTS agents (
         name TEXT PRIMARY KEY,
         first_seen TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS trusted_machines (
+        fingerprint TEXT PRIMARY KEY,
+        created TEXT NOT NULL
+      );
+      DROP TABLE IF EXISTS contacts;
+      UPDATE messages SET state = 'queued' WHERE state = 'awaiting_approval';
     `);
   }
 
@@ -303,11 +298,35 @@ export class Store {
       .run(state, state, state, at, id, peerNode, peerNode);
   }
 
-  heldFrom(address: string, fingerprint: string): Message[] {
+  heldIn(thread: string, address: string): Message[] {
     return this.db
-      .prepare("SELECT * FROM messages WHERE to_addr = ? AND state = 'held' AND sender_fp = ? ORDER BY rowid")
-      .all(address, fingerprint)
+      .prepare("SELECT * FROM messages WHERE thread = ? AND to_addr = ? AND state = 'held' ORDER BY rowid")
+      .all(thread, address)
       .map(toMessage);
+  }
+
+  conversationRequests(address: string): ConversationRequest[] {
+    return this.db
+      .prepare(
+        `SELECT m.thread, m.from_addr, m.sender_fp, p.node, MIN(m.subject) AS subject, COUNT(*) AS held, MIN(m.created) AS created
+         FROM messages m JOIN peers p ON p.fingerprint = m.sender_fp
+         WHERE m.to_addr = ? AND m.state = 'held'
+         GROUP BY m.thread, m.from_addr, m.sender_fp ORDER BY created`,
+      )
+      .all(address)
+      .map((row) => ({
+        thread: String(row.thread),
+        from: String(row.from_addr),
+        node: String(row.node),
+        fingerprint: String(row.sender_fp),
+        subject: String(row.subject),
+        held: Number(row.held),
+        created: String(row.created),
+      }));
+  }
+
+  heldFromMachine(fingerprint: string): Message[] {
+    return this.db.prepare("SELECT * FROM messages WHERE sender_fp = ? AND state = 'held' ORDER BY rowid").all(fingerprint).map(toMessage);
   }
 
   release(id: string): void {
@@ -333,21 +352,16 @@ export class Store {
     return this.conversation(thread, agent, peer)?.status === "approved";
   }
 
-  outgoingState(thread: string, agent: string, peer: string): "queued" | "awaiting_approval" {
-    if (this.isApproved(thread, agent, peer)) {
-      this.db
-        .prepare("UPDATE conversations SET last_activity = ? WHERE thread = ? AND agent = ? AND peer = ?")
-        .run(now(), thread, agent, peer);
-      return "queued";
-    }
+  outgoing(thread: string, agent: string, peer: string): void {
     this.db
       .prepare(
         `INSERT INTO conversations (thread, agent, peer, status, created, last_activity)
-         VALUES (?, ?, ?, 'pending', ?, ?)
-         ON CONFLICT (thread, agent, peer) DO UPDATE SET status = 'pending', last_activity = excluded.last_activity`,
+         VALUES (?, ?, ?, 'approved', ?, ?)
+         ON CONFLICT (thread, agent, peer) DO UPDATE SET
+           status = CASE WHEN status = 'revoked' THEN 'revoked' ELSE 'approved' END,
+           last_activity = excluded.last_activity`,
       )
       .run(thread, agent, peer, now(), now());
-    return "awaiting_approval";
   }
 
   incoming(thread: string, agent: string, peer: string): void {
@@ -361,27 +375,16 @@ export class Store {
       .run(thread, agent, peer, now(), now());
   }
 
-  approve(thread: string, agent: string, address: string): Conversation[] {
-    const approved = this.db
+  approve(thread: string, agent: string): Conversation[] {
+    return this.db
       .prepare("UPDATE conversations SET status = 'approved', last_activity = ? WHERE thread = ? AND agent = ? RETURNING *")
       .all(now(), thread, agent)
       .map(toConversation);
-    const release = this.db.prepare(
-      "UPDATE messages SET state = 'queued' WHERE thread = ? AND from_addr = ? AND to_addr = ? AND state = 'awaiting_approval'",
-    );
-    for (const c of approved) release.run(thread, address, c.peer);
-    return approved;
   }
 
-  revoke(thread: string, agent: string, address: string): number {
-    const revoked = this.db
-      .prepare("UPDATE conversations SET status = 'revoked' WHERE thread = ? AND agent = ? RETURNING peer")
-      .all(thread, agent);
-    const hold = this.db.prepare(
-      "UPDATE messages SET state = 'awaiting_approval' WHERE thread = ? AND from_addr = ? AND to_addr = ? AND state = 'queued'",
-    );
-    for (const row of revoked) hold.run(thread, address, String(row.peer));
-    return revoked.length;
+  revoke(thread: string, agent: string): number {
+    return this.db.prepare("UPDATE conversations SET status = 'revoked' WHERE thread = ? AND agent = ?").run(thread, agent)
+      .changes as number;
   }
 
   conversations(agent: string): Conversation[] {
@@ -392,13 +395,6 @@ export class Store {
       .map(toConversation);
   }
 
-  awaitingApproval(thread: string): number {
-    const row = this.db
-      .prepare("SELECT COUNT(*) AS n FROM messages WHERE thread = ? AND state = 'awaiting_approval'")
-      .get(thread);
-    return Number(row?.n ?? 0);
-  }
-
   peer(node: string): Peer | undefined {
     const row = this.db.prepare("SELECT * FROM peers WHERE node = ? AND trusted = 1").get(node);
     return row && toPeer(row);
@@ -407,6 +403,10 @@ export class Store {
   peerByFingerprint(fingerprint: string): Peer | undefined {
     const row = this.db.prepare("SELECT * FROM peers WHERE fingerprint = ?").get(fingerprint);
     return row && toPeer(row);
+  }
+
+  peersNamed(node: string): Peer[] {
+    return this.db.prepare("SELECT * FROM peers WHERE node = ?").all(node).map(toPeer);
   }
 
   peers(): Peer[] {
@@ -431,15 +431,23 @@ export class Store {
     this.db.prepare("UPDATE peers SET url = ? WHERE fingerprint = ?").run(url, fingerprint);
   }
 
+  alwaysAccept(fingerprint: string, always: boolean): boolean {
+    const change = always
+      ? this.db.prepare("INSERT OR IGNORE INTO trusted_machines (fingerprint, created) VALUES (?, ?)").run(fingerprint, now())
+      : this.db.prepare("DELETE FROM trusted_machines WHERE fingerprint = ?").run(fingerprint);
+    return change.changes > 0;
+  }
+
+  alwaysAccepts(fingerprint: string): boolean {
+    return this.db.prepare("SELECT 1 FROM trusted_machines WHERE fingerprint = ?").get(fingerprint) !== undefined;
+  }
+
   forgetPeer(node: string): boolean {
     this.db
-      .prepare(
-        `UPDATE messages SET state = 'awaiting_approval' WHERE state = 'queued'
-         AND thread IN (SELECT thread FROM conversations WHERE ${OF_NODE("peer")})`,
-      )
+      .prepare(`UPDATE messages SET state = 'failed', last_error = 'machine was forgotten' WHERE state = 'queued' AND ${OF_NODE("to_addr")}`)
       .run(node, node);
     this.db.prepare(`UPDATE conversations SET status = 'revoked' WHERE ${OF_NODE("peer")}`).run(node, node);
-    this.db.prepare("DELETE FROM contacts WHERE fingerprint IN (SELECT fingerprint FROM peers WHERE node = ?)").run(node);
+    this.db.prepare("DELETE FROM trusted_machines WHERE fingerprint IN (SELECT fingerprint FROM peers WHERE node = ?)").run(node);
     return this.db.prepare("DELETE FROM peers WHERE node = ?").run(node).changes > 0;
   }
 
@@ -449,59 +457,6 @@ export class Store {
       this.db.prepare(`SELECT 1 FROM conversations WHERE status = 'approved' AND ${OF_NODE("peer")}`).get(node, node) !==
       undefined
     );
-  }
-
-  contactAccepted(agent: string, fingerprint: string): boolean {
-    const row = this.db.prepare("SELECT status FROM contacts WHERE agent = ? AND fingerprint = ?").get(agent, fingerprint);
-    return row?.status === "accepted";
-  }
-
-  acceptedByAnyone(fingerprint: string): boolean {
-    return this.db.prepare("SELECT 1 FROM contacts WHERE fingerprint = ? AND status = 'accepted'").get(fingerprint) !== undefined;
-  }
-
-  requestContact(agent: string, fingerprint: string): boolean {
-    return (
-      this.db
-        .prepare("INSERT OR IGNORE INTO contacts (agent, fingerprint, status, created) VALUES (?, ?, 'pending', ?)")
-        .run(agent, fingerprint, now()).changes > 0
-    );
-  }
-
-  acceptContact(agent: string, fingerprint: string): void {
-    this.db
-      .prepare(
-        `INSERT INTO contacts (agent, fingerprint, status, created) VALUES (?, ?, 'accepted', ?)
-         ON CONFLICT (agent, fingerprint) DO UPDATE SET status = 'accepted'`,
-      )
-      .run(agent, fingerprint, now());
-  }
-
-  contactRequests(agent: string, address: string): ContactRequest[] {
-    return this.db
-      .prepare(
-        `SELECT p.node, c.fingerprint, c.created,
-           (SELECT COUNT(*) FROM messages m WHERE m.to_addr = ? AND m.state = 'held' AND m.sender_fp = c.fingerprint) AS held
-         FROM contacts c JOIN peers p ON p.fingerprint = c.fingerprint
-         WHERE c.agent = ? AND c.status = 'pending' ORDER BY c.created`,
-      )
-      .all(address, agent)
-      .map((row) => ({
-        node: String(row.node),
-        fingerprint: String(row.fingerprint),
-        held: Number(row.held),
-        created: String(row.created),
-      }));
-  }
-
-  acceptedContacts(agent: string): string[] {
-    return this.db
-      .prepare(
-        `SELECT p.node FROM contacts c JOIN peers p ON p.fingerprint = c.fingerprint
-         WHERE c.agent = ? AND c.status = 'accepted' ORDER BY p.node`,
-      )
-      .all(agent)
-      .map((row) => String(row.node));
   }
 
   touchAgent(name: string): void {

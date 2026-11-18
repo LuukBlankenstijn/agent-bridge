@@ -8,7 +8,6 @@ import { fetchCert, peerRequest, type Identity } from "./tls.js";
 export interface Found {
   node: string;
   address: string;
-  agents?: string[];
 }
 
 const PROBE_TIMEOUT_MS = 400;
@@ -16,7 +15,7 @@ const CONCURRENCY = 128;
 const MAX_HOSTS = 4096;
 const AUTO_MIN_PREFIX = 22;
 
-const hello = z.object({ node: z.string(), agents: z.array(z.string()).optional() });
+const hello = z.object({ node: z.string() });
 
 function toInt(ip: string): number {
   return ip.split(".").reduce((n, part) => n * 256 + Number(part), 0);
@@ -97,8 +96,8 @@ async function identify(host: string, port: number, identity: Identity): Promise
     const endpoint = await fetchCert(`https://${host}:${port}`);
     const response = await peerRequest(endpoint, identity, "GET", "/hello");
     if (response.status !== 200) return undefined;
-    const { node, agents } = hello.parse(JSON.parse(response.body));
-    return { node, address: `${host}:${port}`, agents };
+    const { node } = hello.parse(JSON.parse(response.body));
+    return { node, address: `${host}:${port}` };
   } catch {
     return undefined;
   }

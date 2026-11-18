@@ -50,13 +50,15 @@ extensions:
 
 Agents send to `agent` (same machine), `agent@host` (another machine, first time) or `machine/agent`.
 
-Between machines you stay in control:
+Messages you send leave right away. The receiving side stays in control:
 
-- **Sender** approves each new conversation once.
-- **Receiver** accepts each new machine once, per agent.
+- **Accept** each conversation another machine starts with one of your agents. That lets only that thread
+  through, not the whole machine.
+- **Trust** your own machines (e.g. your other laptop) to accept all their conversations, for every agent.
 
-Machines identify each other by certificate. Unaccepted machines can't upload files, see your agent names, or claim
-a known name.
+Your agent is woken when a conversation waits for you, and when a message it sent has not arrived (held by the
+receiver, failed, or retrying). Machines identify each other by certificate. Machines without an accepted
+conversation can't upload files or claim a known name, and no machine sees your agent names.
 
 ### Commands
 
@@ -65,11 +67,13 @@ opencode; omp needs `name=value` arguments).
 
 | Command | |
 |---|---|
-| `accept machine [fingerprint]` | Let a machine message this agent |
-| `approve thread` | Let a conversation flow |
-| `revoke thread` | Stop a conversation |
+| `accept thread` | Accept one conversation from another machine |
+| `revoke thread` | Stop a conversation; its new messages are held again |
+| `trust machine` | Always accept conversations from this machine (your own machines only) |
+| `untrust machine` | Stop always accepting a machine |
 | `forget machine` | Drop a machine entirely |
-| `pending` | What's waiting for you |
+| `pending` | Conversations waiting for you |
+| `peers` | This agent's address, local agents, known machines |
 | `listen on` | Interface or IP to listen on (`wg0`, `0.0.0.0`, …) |
 | `restart` | Restart the daemon after an update |
 

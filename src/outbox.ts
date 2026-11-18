@@ -69,14 +69,18 @@ export class Outbox {
         continue;
       }
       try {
-        this.bridge.store.markSent(message.id, await this.deliver(this.peer(node), message));
+        const state = await this.deliver(this.peer(node), message);
+        this.bridge.store.markSent(message.id, state);
         this.backoff.delete(node);
+        if (state === "held_by_receiver") this.bridge.emit("undelivered", { message, problem: "held" });
       } catch (error) {
         if (error instanceof PermanentFailure) {
           this.bridge.store.markFailed(message.id, error.message);
+          this.bridge.emit("undelivered", { message, problem: "failed", error: error.message });
           continue;
         }
         this.bridge.store.recordError(message.id, String(error));
+        if (message.lastError === null) this.bridge.emit("undelivered", { message, problem: "retrying", error: String(error) });
         this.fail(node);
         blocked.add(node);
       }

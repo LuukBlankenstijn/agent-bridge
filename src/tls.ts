@@ -1,4 +1,3 @@
-import { X509Certificate } from "node:crypto";
 import { request } from "node:https";
 import type { Readable } from "node:stream";
 import { connect } from "node:tls";
@@ -36,10 +35,6 @@ export async function generateIdentity(node: string): Promise<{ cert: string; ke
     notAfterDate,
   });
   return { cert: pems.cert, key: pems.private };
-}
-
-export function fingerprintOf(pem: string): string {
-  return new X509Certificate(pem).fingerprint256;
 }
 
 export function pemOf(raw: Buffer): string {
