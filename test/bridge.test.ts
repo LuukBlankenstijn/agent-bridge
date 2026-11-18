@@ -370,4 +370,22 @@ describe("conversation expiry", () => {
     assert.equal(later.isApproved("t1", "helper", "alice/writer"), false);
     later.close();
   });
+
+  test("a thread this machine started before 0.3.0 counts as accepted after upgrading", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "agent-bridge-store-")), "bridge.db");
+    const old = new Store(file, 24);
+    old.incoming("t1", "writer", "bob/helper");
+    old.db
+      .prepare(
+        `INSERT INTO messages (id, thread, from_addr, to_addr, subject, body, attachments, created, state)
+         VALUES ('t1', 't1', 'alice/writer', 'bob/helper', '', '', '[]', '2026-01-01T00:00:00Z', 'awaiting_approval')`,
+      )
+      .run();
+    old.close();
+
+    const upgraded = new Store(file, 24);
+    assert.equal(upgraded.isApproved("t1", "writer", "bob/helper"), true);
+    assert.equal(upgraded.message("t1")?.state, "queued");
+    upgraded.close();
+  });
 });

@@ -174,6 +174,10 @@ export class Store {
         name TEXT PRIMARY KEY
       );
       DROP TABLE IF EXISTS contacts;
+      UPDATE conversations SET status = 'approved' WHERE status = 'pending' AND EXISTS (
+        SELECT 1 FROM messages m WHERE m.thread = conversations.thread AND m.to_addr = conversations.peer
+          AND m.from_addr LIKE '%/' || conversations.agent AND m.state != 'held'
+      );
       UPDATE messages SET state = 'queued' WHERE state = 'awaiting_approval';
     `);
   }
