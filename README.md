@@ -58,7 +58,8 @@ Messages you send leave right away. The receiving side stays in control:
 
 Your agent is woken when a conversation waits for you, and when a message it sent has not arrived (held by the
 receiver, failed, or retrying). Machines identify each other by certificate. Machines without an accepted
-conversation can't upload files or claim a known name, and no machine sees your agent names.
+conversation can't upload files or claim a known name. Other machines see only the agents you `listed`; machines you
+trust see all of them.
 
 ### Commands
 
@@ -71,6 +72,7 @@ opencode; omp needs `name=value` arguments).
 | `revoke thread` | Stop a conversation; its new messages are held again |
 | `trust machine` | Always accept conversations from this machine (your own machines only; accept one of its conversations first) |
 | `untrust machine` | Stop always accepting a machine |
+| `listed on\|off` | Show this agent's name to other machines in `discover` (trusted machines always see all agents) |
 | `forget machine` | Drop a machine entirely |
 | `pending` | Conversations waiting for you |
 | `peers` | This agent's address, local agents, known machines |

@@ -50,7 +50,10 @@ async function handle(bridge: Bridge, req: IncomingMessage, res: ServerResponse)
   const { pathname } = new URL(req.url ?? "/", "https://peer");
 
   if (req.method === "GET" && pathname === "/hello") {
-    send(res, 200, { node: bridge.identity.node });
+    const fingerprint = (req.socket as TLSSocket).getPeerCertificate()?.fingerprint256;
+    const caller = fingerprint === undefined ? undefined : bridge.store.peerByFingerprint(fingerprint);
+    const ownMachine = caller !== undefined && caller.trusted && bridge.store.alwaysAccepts(caller.fingerprint);
+    send(res, 200, { node: bridge.identity.node, agents: ownMachine ? bridge.store.agents() : bridge.store.listedAgents() });
     return;
   }
   const peer = identify(bridge, req);

@@ -243,6 +243,7 @@ export function agentServer(bridge: Bridge, agent: string): McpServer {
 
   const peers = () => ({
     you: address,
+    listed: bridge.store.listedAgents().includes(agent),
     localAgents: bridge.store.agents().map((name) => bridge.address(name)),
     machines: bridge.store
       .peers()
@@ -394,6 +395,24 @@ export function agentServer(bridge: Bridge, agent: string): McpServer {
       return prompt("I restarted the agent-bridge daemon; it comes back on your next agent-bridge call.");
     },
   );
+
+  server.registerPrompt(
+    "listed",
+    {
+      title: "Show this agent to other machines",
+      description: `"on" lets every machine that runs discover see ${address}; "off" hides it again. Machines you trust always see all agents.`,
+      argsSchema: { on: z.enum(["on", "off"]).describe('"on" or "off"') },
+    },
+    ({ on }) => {
+      bridge.store.setListed(agent, on === "on");
+      return prompt(
+        on === "on"
+          ? `I made ${address} visible to other machines that run agent-bridge discover.`
+          : `I hid ${address} from other machines; only machines I trust still see it.`,
+      );
+    },
+  );
+
   server.registerPrompt(
     "listen",
     {
@@ -420,7 +439,8 @@ export function agentServer(bridge: Bridge, agent: string): McpServer {
         "Look for other machines running agent-bridge by probing hosts on the peer port. Without targets it scans the " +
         "local networks this machine listens on (subnets larger than /22 are limited to this machine's /24), Tailscale " +
         'peers when tailscale is installed, and the "discover" list from the config, for other VPNs and networks. ' +
-        'Returns each machine with its address. Message one with "agent@address"; ask the user for the agent name.',
+        "Returns each machine with its address and the agents it lets you see: the ones its user listed, or all of them " +
+        'if that machine trusts yours. Message one with "agent@address"; ask the user for the agent name if it is not listed.',
       inputSchema: {
         targets: z
           .array(z.string())

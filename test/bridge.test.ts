@@ -229,11 +229,14 @@ describe("agents on two machines", () => {
     );
   });
 
-  test("discover finds other machines, but not itself and no agent names", async () => {
-    const result = await call(writer, "discover", {
-      targets: [`127.0.0.1:${bob.config.peerPort}`, `127.0.0.1:${alice.config.peerPort}`, "127.0.0.1:1"],
-    });
-    assert.deepEqual(result.machines, [{ node: "bob", address: `127.0.0.1:${bob.config.peerPort}`, known: true }]);
+  test("discover shows only listed agents, and not this machine itself", async () => {
+    const targets = [`127.0.0.1:${bob.config.peerPort}`, `127.0.0.1:${alice.config.peerPort}`, "127.0.0.1:1"];
+    const visible = async () => (await call(writer, "discover", { targets })).machines.map((m: { node: string; agents: string[] }) => [m.node, m.agents]);
+    assert.deepEqual(await visible(), [["bob", []]]);
+    assert.match(await command(helper, "listed", { on: "on" }), /visible/);
+    assert.deepEqual(await visible(), [["bob", ["helper"]]]);
+    await command(helper, "listed", { on: "off" });
+    assert.deepEqual(await visible(), [["bob", []]]);
   });
 
   test("a machine cannot take over a name another machine already uses", async () => {
@@ -316,6 +319,10 @@ describe("agents on two machines", () => {
     await stateAt(laptop, ongoing.id, "delivered");
     const later = await call(sender, "send", { to: "home/b", subject: "", body: "new thread" });
     await stateAt(laptop, later.id, "held_by_receiver");
+
+    await command(a, "trust", { machine: "laptop" });
+    const seen = await call(sender, "discover", { targets: [`127.0.0.1:${home.config.peerPort}`] });
+    assert.deepEqual(seen.machines[0].agents, ["a", "b"]);
   });
 
   test("messages to an offline machine are retried until it is back, and the sender is told", async () => {

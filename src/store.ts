@@ -170,6 +170,9 @@ export class Store {
         fingerprint TEXT PRIMARY KEY,
         created TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS listed_agents (
+        name TEXT PRIMARY KEY
+      );
       DROP TABLE IF EXISTS contacts;
       UPDATE messages SET state = 'queued' WHERE state = 'awaiting_approval';
     `);
@@ -469,5 +472,14 @@ export class Store {
 
   agents(): string[] {
     return this.db.prepare("SELECT name FROM agents ORDER BY name").all().map((row) => String(row.name));
+  }
+
+  setListed(name: string, listed: boolean): void {
+    if (listed) this.db.prepare("INSERT OR IGNORE INTO listed_agents (name) VALUES (?)").run(name);
+    else this.db.prepare("DELETE FROM listed_agents WHERE name = ?").run(name);
+  }
+
+  listedAgents(): string[] {
+    return this.db.prepare("SELECT name FROM listed_agents ORDER BY name").all().map((row) => String(row.name));
   }
 }
