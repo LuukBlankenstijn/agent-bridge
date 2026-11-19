@@ -52,13 +52,16 @@ async function handle(bridge: Bridge, req: IncomingMessage, res: ServerResponse)
   if (req.method === "GET" && pathname === "/hello") {
     const fingerprint = (req.socket as TLSSocket).getPeerCertificate()?.fingerprint256;
     const caller = fingerprint === undefined ? undefined : bridge.store.peerByFingerprint(fingerprint);
-    const ownMachine = caller !== undefined && caller.trusted && bridge.store.alwaysAccepts(caller.fingerprint);
-    send(res, 200, { node: bridge.identity.node, agents: ownMachine ? bridge.store.agents() : bridge.store.listedAgents() });
+    const level = caller === undefined ? "unknown" : bridge.store.level(caller.fingerprint);
+    const seesAgents = caller !== undefined && caller.verified && (level === "known" || level === "trusted");
+    send(res, 200, { node: bridge.identity.node, agents: seesAgents ? bridge.store.agents() : [] });
     return;
   }
   const peer = identify(bridge, req);
+  const level = bridge.store.level(peer.fingerprint);
+  if (level === "blocked") throw new PeerError(403, "this machine is blocked here");
   const blob = /^\/blobs\/([0-9a-f]{64})$/.exec(pathname);
-  const mayUpload = peer.trusted && (bridge.store.alwaysAccepts(peer.fingerprint) || bridge.store.approvedWithNode(peer.node));
+  const mayUpload = peer.verified && (level !== "unknown" || bridge.store.approvedWithNode(peer.node));
   if (blob && !mayUpload) throw new PeerError(403, "attachments are accepted only in accepted conversations");
   if (blob && req.method === "HEAD") {
     res.writeHead(bridge.blobs.has(blob[1]) ? 200 : 404).end();
@@ -76,7 +79,7 @@ async function handle(bridge: Bridge, req: IncomingMessage, res: ServerResponse)
     return;
   }
   if (req.method === "POST" && pathname === "/receipts") {
-    if (!peer.trusted) throw new PeerError(403, "receipts are accepted only from known machines");
+    if (!peer.verified) throw new PeerError(403, "receipts are accepted only from known machines");
     const parsed = receipt.safeParse(await readJson(req));
     if (!parsed.success) throw new PeerError(400, parsed.error.message);
     bridge.store.applyReceipt(peer.node, parsed.data.id, parsed.data.state, parsed.data.at);

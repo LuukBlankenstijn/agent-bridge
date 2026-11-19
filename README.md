@@ -50,34 +50,35 @@ extensions:
 
 Agents send to `agent` (same machine), `agent@host` (another machine, first time) or `machine/agent`.
 
-Messages you send leave right away. The receiving side stays in control:
+Messages you send leave right away. The receiving side decides per machine:
 
-- **Accept** each conversation another machine starts with one of your agents. That lets only that thread
-  through, not the whole machine.
-- **Trust** a machine to accept all its conversations, for every agent.
+| Level | Its conversations | Its agents' messages are | It sees your agents |
+|---|---|---|---|
+| `unknown` (default) | each one needs `/bridge accept` | information, not instructions | no |
+| `known` | accepted automatically | information, not instructions | yes |
+| `trusted` | accepted automatically | requests from a colleague (still asks before destructive or remote actions) | yes |
+| `blocked` | refused | — | no |
 
-Your agent is woken when a conversation waits for you, and when a message it sent has not arrived (held by the
-receiver, failed, or retrying). Machines identify each other by certificate. Machines without an accepted
-conversation can't upload files or claim a known name. Other machines see only the agents you `listed`; machines you
-trust see all of them.
+Messages from agents on the same machine are always treated as requests from a colleague. Your agent is woken when a
+conversation waits for you, and when a message it sent has not arrived. Machines identify each other by certificate;
+raising a machine from `unknown` asks for the start of its certificate fingerprint the first time.
 
 ### Commands
 
-Slash commands only you can run (`/mcp__agent-bridge__<cmd>` in Claude Code, `/agent-bridge:<cmd>` in omp and
-opencode; omp needs `name=value` arguments).
+One command, only you can run it:
 
-| Command | |
+| | |
 |---|---|
-| `accept [thread] [machine]` | Accept a conversation from another machine; no arguments accepts the only one waiting, `machine` accepts all waiting from it |
-| `revoke thread` | Stop a conversation; its new messages are held again |
-| `trust machine [fingerprint]` | Always accept conversations from this machine. The first time, pass the start (16+ characters) of the `yourCertificate` its `peers` shows |
-| `untrust machine` | Stop always accepting a machine |
-| `listed on\|off` | Show this agent's name to other machines in `discover` (trusted machines always see all agents) |
-| `forget machine` | Drop a machine entirely |
-| `pending` | Conversations waiting for you |
-| `peers` | This agent's address, local agents, known machines |
-| `listen on` | Interface or IP to listen on (`wg0`, `0.0.0.0`, …) |
-| `restart` | Restart the daemon after an update |
+| `/bridge` | Machines, waiting conversations and usage |
+| `/bridge machines` | List machines with their level, and conversations waiting for you |
+| `/bridge machine <name> <level> [fingerprint]` | Set a machine's level; the first time it leaves `unknown`, add the start (16+ characters) of its certificate from its `peers` |
+| `/bridge accept [thread\|machine]` | Accept a waiting conversation |
+| `/bridge revoke <thread>` | Stop a conversation; its new messages are held again |
+| `/bridge listen <interface\|ip>` | Where other machines reach this one (`wg0`, `0.0.0.0`, …); restarts the daemon |
+| `/bridge restart` | Restart the daemon after an update |
+
+omp completes subcommands, machine names and levels as you type. In Claude Code the same commands are MCP prompts:
+`/mcp__agent-bridge__machine zenbook trusted`.
 
 ### Tools for the agent
 

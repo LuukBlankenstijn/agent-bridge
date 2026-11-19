@@ -1,7 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { dataDir, defaultAgentName, ensureSetup } from "./config.js";
-import { readEvents, type PushEvent } from "./events.js";
+import { readEvents, sendCommand, type PushEvent } from "./events.js";
 import { connectionRefused, startDetachedDaemon } from "./launch.js";
+import { USAGE } from "./usage.js";
 
 interface OpencodeEvent {
   type: string;
@@ -13,7 +14,21 @@ interface OpencodeContext {
   location: { directory: string };
   options: Record<string, unknown>;
   event: { subscribe(options: { types?: string[]; signal?: AbortSignal }): AsyncIterable<OpencodeEvent> };
-  session: { prompt(input: { sessionID: string; text: string }): Promise<unknown> };
+  session: {
+    prompt(input: { sessionID: string; text: string }): Promise<unknown>;
+    synthetic(input: { sessionID: string; text: string }): Promise<unknown>;
+  };
+  command: {
+    transform(
+      callback: (editor: {
+        add(definition: {
+          name: string;
+          description: string;
+          execute(input: { sessionID: string; prompt: { text?: string } }): Promise<void>;
+        }): void;
+      }) => void,
+    ): Promise<unknown>;
+  };
 }
 
 const RETRY_MS = 2_000;
@@ -44,8 +59,8 @@ export default {
       }
     })().catch(() => {});
 
+    const dir = dataDir();
     void (async () => {
-      const dir = dataDir();
       while (!controller.signal.aborted) {
         try {
           const config = await ensureSetup(dir);
@@ -56,6 +71,20 @@ export default {
         }
       }
     })();
+
+    void ctx.command.transform((editor) => {
+      editor.add({
+        name: "bridge",
+        description: `agent-bridge: ${USAGE}`,
+        async execute({ sessionID: commandSession, prompt }) {
+          const config = await ensureSetup(dir);
+          const text = await sendCommand(config, agent, prompt.text ?? "").catch(
+            (error: unknown) => `agent-bridge failed: ${error}`,
+          );
+          await ctx.session.synthetic({ sessionID: commandSession, text });
+        },
+      });
+    });
 
     return () => controller.abort();
   },

@@ -26,3 +26,22 @@ export async function* readEvents(config: Config, agent: string, signal?: AbortS
     }
   }
 }
+
+const completion = z.array(z.object({ label: z.string(), value: z.string(), description: z.string() }));
+
+export async function sendCommand(config: Config, agent: string, text: string): Promise<string> {
+  const response = await fetch(`http://127.0.0.1:${config.mcpPort}/command`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${config.adminToken}`, [AGENT_HEADER]: agent, "content-type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!response.ok) throw new Error(`agent-bridge refused the command: HTTP ${response.status}`);
+  return z.object({ text: z.string() }).parse(await response.json()).text;
+}
+
+export async function completeCommand(config: Config, agent: string, prefix: string): Promise<z.infer<typeof completion>> {
+  const url = new URL(`http://127.0.0.1:${config.mcpPort}/complete`);
+  url.searchParams.set("prefix", prefix);
+  const response = await fetch(url, { headers: { authorization: `Bearer ${config.adminToken}`, [AGENT_HEADER]: agent } });
+  return response.ok ? completion.parse(await response.json()) : [];
+}

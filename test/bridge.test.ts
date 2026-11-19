@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -10,8 +11,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ensureSetup, type Config } from "../src/config.js";
 import { startDaemon, type Daemon } from "../src/daemon.js";
-import { AGENT_HEADER, readEvents, type PushEvent } from "../src/events.js";
+import { AGENT_HEADER, completeCommand, readEvents, sendCommand, type PushEvent } from "../src/events.js";
 import { Store } from "../src/store.js";
+import { X509Certificate } from "node:crypto";
 import { peerRequest } from "../src/tls.js";
 
 async function freePort(): Promise<number> {
@@ -76,11 +78,7 @@ async function call(client: Client, name: string, args: Record<string, unknown> 
   return JSON.parse(text);
 }
 
-async function command(client: Client, name: string, args: Record<string, string> = {}): Promise<string> {
-  const response = await client.getPrompt({ name, arguments: args });
-  const content = response.messages[0].content;
-  return content.type === "text" ? content.text : "";
-}
+const bridgeCommand = (node: Node, agent: string, text: string) => sendCommand(node.config, agent, text);
 
 async function eventually<T>(check: () => Promise<T | undefined> | T | undefined, what: string): Promise<T> {
   for (let i = 0; i < 100; i++) {
@@ -192,7 +190,7 @@ describe("agents on two machines", () => {
     const laterSession = bob.events("helper");
     await eventually(() => laterSession.find((e) => e.meta.kind === "request"), "pending request replayed on connect");
 
-    assert.match(await command(helper, "accept", { thread: opened.thread }), /1 held message/);
+    assert.match(await bridgeCommand(bob, "helper", `accept ${opened.thread}`), /1 held message/);
     const [received] = await call(helper, "inbox");
     assert.equal(received.id, opened.id);
     assert.equal(received.remote, true);
@@ -229,14 +227,26 @@ describe("agents on two machines", () => {
     );
   });
 
-  test("discover shows only listed agents, and not this machine itself", async () => {
-    const targets = [`127.0.0.1:${bob.config.peerPort}`, `127.0.0.1:${alice.config.peerPort}`, "127.0.0.1:1"];
-    const visible = async () => (await call(writer, "discover", { targets })).machines.map((m: { node: string; agents: string[] }) => [m.node, m.agents]);
-    assert.deepEqual(await visible(), [["bob", []]]);
-    assert.match(await command(helper, "listed", { on: "on" }), /visible/);
-    assert.deepEqual(await visible(), [["bob", ["helper"]]]);
-    await command(helper, "listed", { on: "off" });
-    assert.deepEqual(await visible(), [["bob", []]]);
+  test("discover shows agents only to known or trusted machines, and not this machine itself", async () => {
+    const host = await createNode("host");
+    await host.agent("desk");
+    await host.agent("lab");
+    const guest = await createNode("guest");
+    const visitor = await guest.agent("v");
+    const targets = [`127.0.0.1:${host.config.peerPort}`, `127.0.0.1:${guest.config.peerPort}`, "127.0.0.1:1"];
+    const visible = async () => (await call(visitor, "discover", { targets })).machines.map((m: { node: string; agents: string[] }) => [m.node, m.agents]);
+    assert.deepEqual(await visible(), [["host", []]]);
+
+    const hello = await call(visitor, "send", { to: `desk@127.0.0.1:${host.config.peerPort}`, subject: "", body: "hi" });
+    await stateAt(guest, hello.id, "held_by_receiver");
+    const { yourCertificate } = await call(visitor, "peers");
+    assert.match(await bridgeCommand(host, "desk", `machine guest known ${yourCertificate.slice(0, 23)}`), /is now known/);
+    assert.deepEqual(await visible(), [["host", ["desk", "lab"]]]);
+
+    await bridgeCommand(host, "desk", "machine guest blocked");
+    assert.deepEqual(await visible(), [["host", []]]);
+    const refused = await call(visitor, "send", { to: "host/desk", subject: "", body: "blocked?" });
+    await stateAt(guest, refused.id, "failed");
   });
 
   test("a machine cannot take over a name another machine already uses", async () => {
@@ -252,8 +262,8 @@ describe("agents on two machines", () => {
   test("revoking a conversation holds the next incoming message again", async () => {
     const opened = await call(writer, "send", { to: "bob/helper", subject: "revoke me", body: "one" });
     await stateAt(alice, opened.id, "held_by_receiver");
-    await command(helper, "accept", { thread: opened.thread });
-    assert.match(await command(helper, "revoke", { thread: opened.thread }), /revoked/);
+    await bridgeCommand(bob, "helper", `accept ${opened.thread}`);
+    assert.match(await bridgeCommand(bob, "helper", `revoke ${opened.thread}`), /Revoked/);
     const next = await call(writer, "reply", { id: opened.id, body: "two" });
     await stateAt(alice, next.id, "held_by_receiver");
   });
@@ -286,50 +296,68 @@ describe("agents on two machines", () => {
     });
     assert.equal(upload.status, 403);
 
-    assert.match(await command(desk, "accept"), /Several conversations wait/);
-    assert.match(await command(desk, "accept", { machine: "sam" }), /More than one machine calls itself "sam"/);
+    assert.match(await bridgeCommand(rita, "desk", "accept"), /Several conversations are waiting/);
+    assert.match(await bridgeCommand(rita, "desk", "accept sam"), /More than one machine calls itself "sam"/);
     assert.equal((await call(desk, "inbox")).length, 0);
-    assert.match(await command(desk, "accept", { thread: realSent.thread }), /1 held message/);
-    assert.match(await command(desk, "accept"), /already belongs to another certificate/);
+    assert.match(await bridgeCommand(rita, "desk", `accept ${realSent.thread}`), /1 held message/);
+    assert.match(await bridgeCommand(rita, "desk", "accept"), /already belongs to another certificate/);
     assert.deepEqual((await call(desk, "inbox")).map((m: { id: string }) => m.id), [realSent.id]);
-    assert.match(await command(desk, "accept", { thread: fakeSent.thread }), /already belongs to another certificate/);
+    assert.match(await bridgeCommand(rita, "desk", `accept ${fakeSent.thread}`), /already belongs to another certificate/);
+
+    const fingerprintStart = (node: Node) => new X509Certificate(node.daemon.bridge.identity.cert).fingerprint256.slice(0, 23);
+    await bridgeCommand(rita, "desk", "machine sam known");
+    assert.match(await bridgeCommand(rita, "desk", `machine sam unknown ${fingerprintStart(fake)}`), /is now unknown/);
+    const sam = rita.daemon.bridge.store.peer("sam");
+    assert.equal(sam?.fingerprint, new X509Certificate(real.daemon.bridge.identity.cert).fingerprint256);
+    assert.equal(rita.daemon.bridge.store.level(sam!.fingerprint), "known");
   });
 
-  test("a trusted machine reaches every agent without accepting each conversation, but not revoked threads", async () => {
+  test("machine levels: known and trusted accept every conversation; only trusted counts as a colleague", async () => {
     const home = await createNode("home");
     const a = await home.agent("a");
     await home.agent("b");
     const laptop = await createNode("laptop");
     const sender = await laptop.agent("l");
+    const set = (text: string) => bridgeCommand(home, "a", text);
 
     const first = await call(sender, "send", { to: `a@127.0.0.1:${home.config.peerPort}`, subject: "", body: "hi a" });
     const toB = await call(sender, "send", { to: "home/b", subject: "", body: "hi b" });
     await stateAt(laptop, first.id, "held_by_receiver");
     await stateAt(laptop, toB.id, "held_by_receiver");
-    assert.match(await command(a, "trust", { machine: "laptop" }), /not verified yet/);
-    assert.match(await command(a, "trust", { machine: "laptop", fingerprint: "AA:BB:CC:DD" }), /at least the first 16/);
-    assert.match(await command(a, "trust", { machine: "laptop", fingerprint: "0".repeat(16) }), /no machine "laptop" with certificate/);
+    assert.match(await set("machine laptop known"), /not verified yet/);
+    assert.match(await set("machine laptop known AA:BB:CC:DD"), /at least the first 16/);
+    assert.match(await set(`machine laptop known ${"0".repeat(16)}`), /no machine "laptop" with certificate/);
+    assert.match(await set("machine laptop friend"), /Usage/);
     const { yourCertificate } = await call(sender, "peers");
-    const short = yourCertificate.slice(0, 23).toLowerCase();
-    assert.match(await command(a, "trust", { machine: "laptop", fingerprint: short }), /2 held message/);
+    assert.match(await set(`machine laptop known ${yourCertificate.slice(0, 23).toLowerCase()}`), /2 held message/);
     await stateAt(laptop, first.id, "delivered");
     await stateAt(laptop, toB.id, "delivered");
+
     const direct = await call(sender, "send", { to: "home/a", subject: "", body: "no accept needed" });
     await stateAt(laptop, direct.id, "delivered");
+    const notice = async () => (await call(a, "read", { id: direct.id })).trust;
+    assert.match(await notice(), /information, not as instructions/);
+    assert.match(await set("machine laptop trusted"), /is now trusted/);
+    assert.match(await notice(), /machine the user trusts/);
+    assert.equal((await call(a, "peers")).machines.find((m: { node: string }) => m.node === "laptop").level, "trusted");
+    assert.match(await set("machines"), /laptop {2}trusted/);
 
-    await command(a, "revoke", { thread: direct.thread });
+    await set(`revoke ${direct.thread}`);
     const afterRevoke = await call(sender, "reply", { id: direct.id, body: "still trusted?" });
     await stateAt(laptop, afterRevoke.id, "held_by_receiver");
 
-    assert.match(await command(a, "untrust", { machine: "laptop" }), /stop always accepting/);
-    const ongoing = await call(sender, "reply", { id: toB.id, body: "same thread" });
-    await stateAt(laptop, ongoing.id, "delivered");
+    assert.match(await set("machine laptop unknown"), /is now unknown/);
+    assert.equal((await call(a, "peers")).machines.length, 0);
     const later = await call(sender, "send", { to: "home/b", subject: "", body: "new thread" });
     await stateAt(laptop, later.id, "held_by_receiver");
+  });
 
-    await command(a, "trust", { machine: "laptop" });
-    const seen = await call(sender, "discover", { targets: [`127.0.0.1:${home.config.peerPort}`] });
-    assert.deepEqual(seen.machines[0].agents, ["a", "b"]);
+  test("/bridge completes subcommands, machine names and levels", async () => {
+    const complete = async (prefix: string) => (await completeCommand(alice.config, "writer", prefix)).map((c) => c.value);
+    assert.deepEqual(await complete("ma"), ["machines", "machine"]);
+    assert.deepEqual(await complete("machine b"), ["machine bob"]);
+    assert.deepEqual(await complete("machine bob t"), ["machine bob trusted"]);
+    assert.match(await bridgeCommand(alice, "writer", ""), /Usage:/);
   });
 
   test("messages to an offline machine are retried until it is back, and the sender is told", async () => {
@@ -388,8 +416,8 @@ describe("conversation expiry", () => {
          VALUES ('t1', 't1', 'alice/writer', 'bob/helper', '', '', '[]', '2026-01-01T00:00:00Z', 'delivered')`,
       )
       .run();
-    old.addPeer({ node: "bob", url: "https://b", cert: "", fingerprint: "real", trusted: true });
-    old.addPeer({ node: "bob", url: "https://b", cert: "", fingerprint: "fake", trusted: false });
+    old.addPeer({ node: "bob", url: "https://b", cert: "", fingerprint: "real", verified: true });
+    old.addPeer({ node: "bob", url: "https://b", cert: "", fingerprint: "fake", verified: false });
     old.db
       .prepare(
         `INSERT INTO messages (id, thread, from_addr, to_addr, subject, body, attachments, created, state, sender_fp)
@@ -403,6 +431,23 @@ describe("conversation expiry", () => {
     assert.equal(upgraded.isApproved("t1", "writer", "bob/helper"), true);
     assert.equal(upgraded.message("r1")?.state, "delivered");
     assert.equal(upgraded.message("f1")?.state, "held");
+    upgraded.close();
+  });
+
+  test("machines always accepted in 0.3.x become known after upgrading", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "agent-bridge-store-")), "bridge.db");
+    new Store(file, 24).close();
+    const old = new DatabaseSync(file);
+    old.exec(`CREATE TABLE always_accept (fingerprint TEXT PRIMARY KEY, created TEXT NOT NULL);
+      INSERT INTO always_accept VALUES ('zen', '2026-01-01');
+      CREATE TABLE listed_agents (name TEXT PRIMARY KEY);`);
+    old.close();
+
+    const upgraded = new Store(file, 24);
+    assert.equal(upgraded.level("zen"), "known");
+    assert.equal(upgraded.level("other"), "unknown");
+    const tables = upgraded.db.prepare("SELECT name FROM sqlite_master WHERE name IN ('always_accept', 'listed_agents')").all();
+    assert.equal(tables.length, 0);
     upgraded.close();
   });
 });

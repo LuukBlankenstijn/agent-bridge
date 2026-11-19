@@ -3,6 +3,8 @@ import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
 
 export type MessageState = "queued" | "held_by_receiver" | "held" | "delivered" | "read" | "failed";
 export type ConversationStatus = "pending" | "approved" | "revoked" | "expired";
+export const MACHINE_LEVELS = ["unknown", "known", "trusted", "blocked"] as const;
+export type MachineLevel = (typeof MACHINE_LEVELS)[number];
 
 export interface Attachment {
   name: string;
@@ -39,7 +41,7 @@ export interface Peer {
   url: string;
   cert: string;
   fingerprint: string;
-  trusted: boolean;
+  verified: boolean;
   firstSeen: string;
 }
 
@@ -99,7 +101,7 @@ function toPeer(row: Row): Peer {
     url: String(row.url),
     cert: String(row.cert),
     fingerprint: String(row.fingerprint),
-    trusted: row.trusted === 1,
+    verified: row.trusted === 1,
     firstSeen: String(row.first_seen),
   };
 }
@@ -166,12 +168,9 @@ export class Store {
         name TEXT PRIMARY KEY,
         first_seen TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS always_accept (
+      CREATE TABLE IF NOT EXISTS machine_levels (
         fingerprint TEXT PRIMARY KEY,
-        created TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS listed_agents (
-        name TEXT PRIMARY KEY
+        level TEXT NOT NULL
       );
       DROP TABLE IF EXISTS contacts;
       UPDATE conversations SET status = 'approved' WHERE status = 'pending' AND EXISTS (
@@ -185,6 +184,14 @@ export class Store {
       );
       UPDATE messages SET state = 'queued' WHERE state = 'awaiting_approval';
     `);
+    const hasOldTrust = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'always_accept'").get();
+    if (hasOldTrust !== undefined) {
+      this.db.exec(`
+        INSERT OR IGNORE INTO machine_levels (fingerprint, level) SELECT fingerprint, 'known' FROM always_accept;
+        DROP TABLE always_accept;
+      `);
+    }
+    this.db.exec("DROP TABLE IF EXISTS listed_agents; DROP TABLE IF EXISTS own_machines;");
   }
 
   close(): void {
@@ -432,10 +439,10 @@ export class Store {
   addPeer(peer: Omit<Peer, "firstSeen">): void {
     this.db
       .prepare("INSERT INTO peers (fingerprint, node, url, cert, trusted, first_seen) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(peer.fingerprint, peer.node, peer.url, peer.cert, peer.trusted ? 1 : 0, now());
+      .run(peer.fingerprint, peer.node, peer.url, peer.cert, peer.verified ? 1 : 0, now());
   }
 
-  trustPeer(fingerprint: string): void {
+  verifyPeer(fingerprint: string): void {
     this.db.prepare("UPDATE peers SET trusted = 1 WHERE fingerprint = ?").run(fingerprint);
   }
 
@@ -443,24 +450,35 @@ export class Store {
     this.db.prepare("UPDATE peers SET url = ? WHERE fingerprint = ?").run(url, fingerprint);
   }
 
-  alwaysAccept(fingerprint: string, always: boolean): boolean {
-    const change = always
-      ? this.db.prepare("INSERT OR IGNORE INTO always_accept (fingerprint, created) VALUES (?, ?)").run(fingerprint, now())
-      : this.db.prepare("DELETE FROM always_accept WHERE fingerprint = ?").run(fingerprint);
-    return change.changes > 0;
+  level(fingerprint: string): MachineLevel {
+    const row = this.db.prepare("SELECT level FROM machine_levels WHERE fingerprint = ?").get(fingerprint);
+    return row === undefined ? "unknown" : (String(row.level) as MachineLevel);
   }
 
-  alwaysAccepts(fingerprint: string): boolean {
-    return this.db.prepare("SELECT 1 FROM always_accept WHERE fingerprint = ?").get(fingerprint) !== undefined;
-  }
-
-  forgetPeer(node: string): boolean {
+  setLevel(fingerprint: string, level: MachineLevel): void {
+    if (level === "unknown") {
+      this.db.prepare("DELETE FROM machine_levels WHERE fingerprint = ?").run(fingerprint);
+      return;
+    }
     this.db
-      .prepare(`UPDATE messages SET state = 'failed', last_error = 'machine was forgotten' WHERE state = 'queued' AND ${OF_NODE("to_addr")}`)
-      .run(node, node);
-    this.db.prepare(`UPDATE conversations SET status = 'revoked' WHERE ${OF_NODE("peer")}`).run(node, node);
-    this.db.prepare("DELETE FROM always_accept WHERE fingerprint IN (SELECT fingerprint FROM peers WHERE node = ?)").run(node);
-    return this.db.prepare("DELETE FROM peers WHERE node = ?").run(node).changes > 0;
+      .prepare(
+        "INSERT INTO machine_levels (fingerprint, level) VALUES (?, ?) ON CONFLICT (fingerprint) DO UPDATE SET level = excluded.level",
+      )
+      .run(fingerprint, level);
+  }
+
+  forgetPeer(fingerprint: string): boolean {
+    const peer = this.peerByFingerprint(fingerprint);
+    if (peer === undefined) return false;
+    if (peer.verified) {
+      this.db
+        .prepare(`UPDATE messages SET state = 'failed', last_error = 'machine was forgotten' WHERE state = 'queued' AND ${OF_NODE("to_addr")}`)
+        .run(peer.node, peer.node);
+      this.db.prepare(`UPDATE conversations SET status = 'revoked' WHERE ${OF_NODE("peer")}`).run(peer.node, peer.node);
+    }
+    this.db.prepare("DELETE FROM messages WHERE state = 'held' AND sender_fp = ?").run(fingerprint);
+    this.db.prepare("DELETE FROM machine_levels WHERE fingerprint = ?").run(fingerprint);
+    return this.db.prepare("DELETE FROM peers WHERE fingerprint = ?").run(fingerprint).changes > 0;
   }
 
   approvedWithNode(node: string): boolean {
@@ -481,14 +499,5 @@ export class Store {
 
   agents(): string[] {
     return this.db.prepare("SELECT name FROM agents ORDER BY name").all().map((row) => String(row.name));
-  }
-
-  setListed(name: string, listed: boolean): void {
-    if (listed) this.db.prepare("INSERT OR IGNORE INTO listed_agents (name) VALUES (?)").run(name);
-    else this.db.prepare("DELETE FROM listed_agents WHERE name = ?").run(name);
-  }
-
-  listedAgents(): string[] {
-    return this.db.prepare("SELECT name FROM listed_agents ORDER BY name").all().map((row) => String(row.name));
   }
 }
