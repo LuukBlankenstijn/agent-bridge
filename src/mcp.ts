@@ -72,7 +72,7 @@ export function requestEvent(event: RequestEvent): PushEvent {
       `Tell the user who it is from, the subject, the thread id and the certificate fingerprint so they can check it with ` +
       `the other machine's owner. Only the user can accept it, with the agent-bridge command "accept thread=${event.thread}" ` +
       `(or just "accept" when it is the only conversation waiting). Accepting lets only this conversation through, not the ` +
-      `whole machine. If "${event.node}" is the user's own machine, they can instead run ` +
+      `whole machine. To always accept conversations from "${event.node}", the user can instead run ` +
       `"trust machine=${event.node} fingerprint=${event.fingerprint.slice(0, 23)}" to accept all its conversations, after ` +
       "checking that the fingerprint starts the same on that machine. Do not try to accept on their behalf.",
     meta: { bridge: "agent-bridge", kind: "request", thread: event.thread, from: event.from, fingerprint: event.fingerprint },
@@ -351,8 +351,8 @@ export function agentServer(bridge: Bridge, agent: string): McpServer {
     {
       title: "Always accept a machine",
       description:
-        "Accept every conversation from a machine for all agents here, e.g. your own other laptop. Not for colleagues. " +
-        "Give the certificate fingerprint the first time; check it against that machine's own peers output.",
+        "Always accept every conversation from a machine, for all agents here. The first time, give the start " +
+        "(16+ characters) of its certificate fingerprint.",
       argsSchema: {
         machine: z.string().describe("Machine (node) name"),
         fingerprint: z.string().optional().describe("Certificate fingerprint of that machine"),

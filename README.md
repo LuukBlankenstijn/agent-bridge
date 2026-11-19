@@ -54,7 +54,7 @@ Messages you send leave right away. The receiving side stays in control:
 
 - **Accept** each conversation another machine starts with one of your agents. That lets only that thread
   through, not the whole machine.
-- **Trust** your own machines (e.g. your other laptop) to accept all their conversations, for every agent.
+- **Trust** a machine to accept all its conversations, for every agent.
 
 Your agent is woken when a conversation waits for you, and when a message it sent has not arrived (held by the
 receiver, failed, or retrying). Machines identify each other by certificate. Machines without an accepted
@@ -70,7 +70,7 @@ opencode; omp needs `name=value` arguments).
 |---|---|
 | `accept [thread] [machine]` | Accept a conversation from another machine; no arguments accepts the only one waiting, `machine` accepts all waiting from it |
 | `revoke thread` | Stop a conversation; its new messages are held again |
-| `trust machine [fingerprint]` | Always accept conversations from this machine (your own machines only). The first time, pass the start (16+ characters) of the `yourCertificate` its `peers` shows |
+| `trust machine [fingerprint]` | Always accept conversations from this machine. The first time, pass the start (16+ characters) of the `yourCertificate` its `peers` shows |
 | `untrust machine` | Stop always accepting a machine |
 | `listed on\|off` | Show this agent's name to other machines in `discover` (trusted machines always see all agents) |
 | `forget machine` | Drop a machine entirely |
