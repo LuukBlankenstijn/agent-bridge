@@ -12,6 +12,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { ensureSetup, type Config } from "../src/config.js";
 import { startDaemon, type Daemon } from "../src/daemon.js";
 import { AGENT_HEADER, completeCommand, readEvents, sendCommand, type PushEvent } from "../src/events.js";
+import { isOlder } from "../src/launch.js";
 import { Store } from "../src/store.js";
 import { X509Certificate } from "node:crypto";
 import { peerRequest } from "../src/tls.js";
@@ -449,5 +450,12 @@ describe("conversation expiry", () => {
     const tables = upgraded.db.prepare("SELECT name FROM sqlite_master WHERE name IN ('always_accept', 'listed_agents')").all();
     assert.equal(tables.length, 0);
     upgraded.close();
+  });
+
+  test("a session replaces only an older daemon", () => {
+    assert.equal(isOlder("0.3.9", "0.4.0"), true);
+    assert.equal(isOlder("0.4.0", "0.4.0"), false);
+    assert.equal(isOlder("0.10.0", "0.9.1"), false);
+    assert.equal(isOlder("1.0.0", "0.9.9"), false);
   });
 });

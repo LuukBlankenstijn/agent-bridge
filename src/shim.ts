@@ -11,7 +11,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { ensureSetup, paths, VERSION, type Config } from "./config.js";
 import { AGENT_HEADER, readEvents } from "./events.js";
-import { connectionRefused, startDetachedDaemon } from "./launch.js";
+import { connectionRefused, isOlder, startDetachedDaemon } from "./launch.js";
 
 const DAEMON_START_TIMEOUT_MS = 15_000;
 
@@ -29,12 +29,8 @@ async function connect(config: Config, agent: string): Promise<Client> {
   return client;
 }
 
-async function connectOrStartDaemon(config: Config, agent: string, dir: string): Promise<Client> {
-  try {
-    return await connect(config, agent);
-  } catch {
-    startDetachedDaemon(dir);
-  }
+async function startAndConnect(config: Config, agent: string, dir: string, ownInstall = false): Promise<Client> {
+  startDetachedDaemon(dir, ownInstall);
   const deadline = Date.now() + DAEMON_START_TIMEOUT_MS;
   while (true) {
     await sleep(200);
@@ -46,6 +42,34 @@ async function connectOrStartDaemon(config: Config, agent: string, dir: string):
       }
     }
   }
+}
+
+async function stopDaemon(config: Config): Promise<void> {
+  const base = `http://127.0.0.1:${config.mcpPort}`;
+  await fetch(`${base}/shutdown`, { method: "POST", headers: { authorization: `Bearer ${config.adminToken}` } }).catch(() => {});
+  const deadline = Date.now() + DAEMON_START_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      await fetch(base);
+    } catch {
+      return;
+    }
+    await sleep(100);
+  }
+}
+
+async function connectOrStartDaemon(config: Config, agent: string, dir: string): Promise<Client> {
+  let client: Client;
+  try {
+    client = await connect(config, agent);
+  } catch {
+    return startAndConnect(config, agent, dir);
+  }
+  const running = client.getServerVersion()?.version ?? "0.0.0";
+  if (!isOlder(running, VERSION)) return client;
+  await client.close();
+  await stopDaemon(config);
+  return startAndConnect(config, agent, dir, true);
 }
 
 export async function runStdioShim(agent: string, dir: string): Promise<void> {

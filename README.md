@@ -75,7 +75,7 @@ One command, only you can run it:
 | `/bridge accept [thread\|machine]` | Accept a waiting conversation |
 | `/bridge revoke <thread>` | Stop a conversation; its new messages are held again |
 | `/bridge listen <interface\|ip>` | Where other machines reach this one (`wg0`, `0.0.0.0`, …); restarts the daemon |
-| `/bridge restart` | Restart the daemon after an update |
+| `/bridge restart` | Restart the daemon |
 
 omp completes subcommands, machine names and levels as you type. In Claude Code the same commands are MCP prompts:
 `/mcp__agent-bridge__machine zenbook trusted`.
@@ -86,6 +86,11 @@ omp completes subcommands, machine names and levels as you type. In Claude Code 
 
 `discover` finds other agent-bridge machines on your local networks, Tailscale peers and any ranges listed under
 `discover` in the config.
+
+## Updating
+
+Update the package; the next session that starts replaces an older running daemon, and a stopped daemon is
+started from the `agent-bridge` on your PATH. Sessions already open keep working; restart them to see new commands.
 
 ## Config
 

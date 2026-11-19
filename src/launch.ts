@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { openSync } from "node:fs";
+import { accessSync, constants, openSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { paths } from "./config.js";
 
@@ -12,11 +13,25 @@ export function connectionRefused(error: unknown): boolean {
   return false;
 }
 
-export function startDetachedDaemon(dir: string): void {
-  const bin = fileURLToPath(new URL("./bin.js", import.meta.url));
+function installedCommand(): string | undefined {
+  if (process.platform === "win32") return undefined;
+  for (const dir of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
+    const candidate = join(dir, "agent-bridge");
+    try {
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {}
+  }
+  return undefined;
+}
+
+export function startDetachedDaemon(dir: string, ownInstall = false): void {
+  const installed = ownInstall ? undefined : installedCommand();
+  const ownBin = fileURLToPath(new URL("./bin.js", import.meta.url));
   const runtime = process.versions.bun === undefined ? process.execPath : "node";
+  const [command, args] = installed === undefined ? [runtime, [ownBin, "daemon"]] : [installed, ["daemon"]];
   const log = openSync(paths(dir).log, "a");
-  spawn(runtime, [bin, "daemon"], {
+  spawn(command, args, {
     detached: true,
     stdio: ["ignore", log, log],
     windowsHide: true,
@@ -24,4 +39,13 @@ export function startDetachedDaemon(dir: string): void {
   })
     .on("error", () => {})
     .unref();
+}
+
+export function isOlder(version: string, than: string): boolean {
+  const a = version.split(".").map(Number);
+  const b = than.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) < (b[i] ?? 0);
+  }
+  return false;
 }
