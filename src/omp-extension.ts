@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { dataDir, defaultAgentName, ensureSetup } from "./config.js";
-import { completeCommand, sendCommand } from "./events.js";
+import { completeCommand, pushEvent, renderEvent, sendCommand } from "./events.js";
 import { connectionRefused, startDetachedDaemon } from "./launch.js";
 import { USAGE } from "./usage.js";
 
@@ -34,12 +34,6 @@ interface OmpExtensionApi {
   ): void;
 }
 
-function isBridgeEvent(params: unknown): params is { content: string; meta: { bridge: string; kind: string } } {
-  if (typeof params !== "object" || params === null || !("content" in params) || !("meta" in params)) return false;
-  const { content, meta } = params;
-  return typeof content === "string" && typeof meta === "object" && meta !== null && "bridge" in meta && meta.bridge === "agent-bridge";
-}
-
 async function run(agent: string, text: string): Promise<string> {
   const dir = dataDir();
   const config = await ensureSetup(dir);
@@ -58,8 +52,10 @@ export default function agentBridge(pi: OmpExtensionApi): void {
   let agent = defaultAgentName();
 
   pi.on("mcp_notification", (event) => {
-    if (event.method !== "notifications/claude/channel" || !isBridgeEvent(event.params)) return;
-    pi.sendUserMessage(`<agent-bridge kind="${event.params.meta.kind}">\n${event.params.content}\n</agent-bridge>`, {
+    if (event.method !== "notifications/claude/channel") return;
+    const parsed = pushEvent.safeParse(event.params);
+    if (!parsed.success || parsed.data.meta.bridge !== "agent-bridge") return;
+    pi.sendUserMessage(renderEvent(parsed.data), {
       deliverAs: "aside",
       attribution: "agent",
     });

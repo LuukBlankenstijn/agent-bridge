@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { dataDir, defaultAgentName, ensureSetup } from "./config.js";
-import { readEvents, sendCommand, type PushEvent } from "./events.js";
+import { readEvents, renderEvent, sendCommand, TRUST_GUIDE, type PushEvent } from "./events.js";
 import { connectionRefused, startDetachedDaemon } from "./launch.js";
 import { USAGE } from "./usage.js";
 
@@ -17,6 +17,7 @@ interface OpencodeContext {
   session: {
     prompt(input: { sessionID: string; text: string }): Promise<unknown>;
     synthetic(input: { sessionID: string; text: string }): Promise<unknown>;
+    instructions: { entry: { put(input: { sessionID: string; key: string; value: string }): Promise<void> } };
   };
   command: {
     transform(
@@ -33,9 +34,6 @@ interface OpencodeContext {
 
 const RETRY_MS = 2_000;
 
-function render(event: PushEvent): string {
-  return `<agent-bridge kind="${event.meta.kind}">\n${event.content}\n</agent-bridge>`;
-}
 
 export default {
   id: "agent-bridge",
@@ -48,13 +46,16 @@ export default {
 
     const deliver = async (event: PushEvent) => {
       if (sessionID === undefined) waiting.push(event);
-      else await ctx.session.prompt({ sessionID, text: render(event) });
+      else await ctx.session.prompt({ sessionID, text: renderEvent(event) });
     };
 
     void (async () => {
       for await (const event of ctx.event.subscribe({ types: ["session.inbox.enqueued"], signal: controller.signal })) {
         if (event.location?.directory !== directory || !event.data?.sessionID) continue;
-        sessionID = event.data.sessionID;
+        if (sessionID !== event.data.sessionID) {
+          sessionID = event.data.sessionID;
+          await ctx.session.instructions.entry.put({ sessionID, key: "agent-bridge", value: TRUST_GUIDE }).catch(() => {});
+        }
         for (const pending of waiting.splice(0)) await deliver(pending);
       }
     })().catch(() => {});
