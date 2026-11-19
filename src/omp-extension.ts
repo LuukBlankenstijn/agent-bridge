@@ -1,7 +1,6 @@
-import { setTimeout as sleep } from "node:timers/promises";
 import { dataDir, defaultAgentName, ensureSetup } from "./config.js";
 import { completeCommand, pushEvent, renderEvent, sendCommand } from "./events.js";
-import { connectionRefused, startDetachedDaemon } from "./launch.js";
+import { ensureDaemon } from "./launch.js";
 import { USAGE } from "./usage.js";
 
 interface McpNotification {
@@ -37,15 +36,8 @@ interface OmpExtensionApi {
 async function run(agent: string, text: string): Promise<string> {
   const dir = dataDir();
   const config = await ensureSetup(dir);
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await sendCommand(config, agent, text);
-    } catch (error) {
-      if (!connectionRefused(error) || attempt === 25) throw error;
-      if (attempt === 0) startDetachedDaemon(dir);
-      await sleep(200);
-    }
-  }
+  await ensureDaemon(config, dir);
+  return sendCommand(config, agent, text);
 }
 
 export default function agentBridge(pi: OmpExtensionApi): void {

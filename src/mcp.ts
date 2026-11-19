@@ -505,6 +505,10 @@ export function startMcpHttp(bridge: Bridge, port: number): Promise<Server> {
         res.writeHead(401).end("unknown token\n");
         return;
       }
+      if (req.method === "GET" && url.pathname === "/version") {
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ version: VERSION }));
+        return;
+      }
       if (req.method === "POST" && url.pathname === "/shutdown") {
         res.writeHead(200).end();
         bridge.emit("shutdown");

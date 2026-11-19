@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { dataDir, defaultAgentName, ensureSetup } from "./config.js";
 import { readEvents, renderEvent, sendCommand, TRUST_GUIDE, type PushEvent } from "./events.js";
-import { connectionRefused, startDetachedDaemon } from "./launch.js";
+import { connectionRefused, ensureDaemon } from "./launch.js";
 import { USAGE } from "./usage.js";
 
 interface OpencodeEvent {
@@ -67,7 +67,7 @@ export default {
           const config = await ensureSetup(dir);
           for await (const event of readEvents(config, agent, controller.signal)) await deliver(event);
         } catch (error) {
-          if (connectionRefused(error)) startDetachedDaemon(dir);
+          if (connectionRefused(error)) await ensureDaemon(await ensureSetup(dir), dir).catch(() => {});
           await sleep(RETRY_MS);
         }
       }
@@ -79,6 +79,7 @@ export default {
         description: `agent-bridge: ${USAGE}`,
         async execute({ sessionID: commandSession, prompt }) {
           const config = await ensureSetup(dir);
+          await ensureDaemon(config, dir).catch(() => {});
           const text = await sendCommand(config, agent, prompt.text ?? "").catch(
             (error: unknown) => `agent-bridge failed: ${error}`,
           );

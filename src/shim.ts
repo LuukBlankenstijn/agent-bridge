@@ -9,11 +9,9 @@ import {
   ListPromptsRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { ensureSetup, paths, VERSION, type Config } from "./config.js";
+import { ensureSetup, VERSION, type Config } from "./config.js";
 import { AGENT_HEADER, readEvents } from "./events.js";
-import { connectionRefused, isOlder, startDetachedDaemon } from "./launch.js";
-
-const DAEMON_START_TIMEOUT_MS = 15_000;
+import { connectionRefused, ensureDaemon } from "./launch.js";
 
 function headers(config: Config, agent: string): Record<string, string> {
   return { authorization: `Bearer ${config.adminToken}`, [AGENT_HEADER]: agent };
@@ -29,51 +27,9 @@ async function connect(config: Config, agent: string): Promise<Client> {
   return client;
 }
 
-async function startAndConnect(config: Config, agent: string, dir: string, ownInstall = false): Promise<Client> {
-  startDetachedDaemon(dir, ownInstall);
-  const deadline = Date.now() + DAEMON_START_TIMEOUT_MS;
-  while (true) {
-    await sleep(200);
-    try {
-      return await connect(config, agent);
-    } catch (error) {
-      if (Date.now() > deadline) {
-        throw new Error(`the agent-bridge daemon did not start; see ${paths(dir).log} (${error})`);
-      }
-    }
-  }
-}
-
-async function stopDaemon(config: Config): Promise<void> {
-  const base = `http://127.0.0.1:${config.mcpPort}`;
-  await fetch(`${base}/shutdown`, { method: "POST", headers: { authorization: `Bearer ${config.adminToken}` } }).catch(() => {});
-  const deadline = Date.now() + DAEMON_START_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    try {
-      await fetch(base);
-    } catch {
-      return;
-    }
-    await sleep(100);
-  }
-}
-
-const REPLACE_ATTEMPTS = 3;
-
 async function connectOrStartDaemon(config: Config, agent: string, dir: string): Promise<Client> {
-  let client: Client;
-  try {
-    client = await connect(config, agent);
-  } catch {
-    client = await startAndConnect(config, agent, dir);
-  }
-  for (let attempt = 0; attempt < REPLACE_ATTEMPTS; attempt++) {
-    if (!isOlder(client.getServerVersion()?.version ?? "0.0.0", VERSION)) return client;
-    await client.close();
-    await stopDaemon(config);
-    client = await startAndConnect(config, agent, dir, true);
-  }
-  return client;
+  await ensureDaemon(config, dir);
+  return connect(config, agent);
 }
 
 export async function runStdioShim(agent: string, dir: string): Promise<void> {
