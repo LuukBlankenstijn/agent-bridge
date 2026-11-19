@@ -63,7 +63,7 @@ async function connectOrStartDaemon(config: Config, agent: string, dir: string):
   try {
     client = await connect(config, agent);
   } catch {
-    return startAndConnect(config, agent, dir);
+    client = await startAndConnect(config, agent, dir);
   }
   const running = client.getServerVersion()?.version ?? "0.0.0";
   if (!isOlder(running, VERSION)) return client;
