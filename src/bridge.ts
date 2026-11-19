@@ -6,6 +6,7 @@ import { Blobs } from "./blobs.js";
 import { assertName, loadConfig, MAX_BODY_BYTES, paths, type Config } from "./config.js";
 import { newId, nodeOf, now, Store, type ConversationRequest, type MachineLevel, type Message, type Peer } from "./store.js";
 import { fetchCert, peerRequest, type Identity } from "./tls.js";
+import { Workspaces } from "./workspace.js";
 
 export interface SendInput {
   to: string;
@@ -83,6 +84,7 @@ export class Bridge extends EventEmitter {
   readonly store: Store;
   readonly blobs: Blobs;
   readonly identity: Identity;
+  readonly workspaces: Workspaces;
 
   constructor(readonly dir: string) {
     super();
@@ -96,6 +98,7 @@ export class Bridge extends EventEmitter {
       cert: readFileSync(p.cert, "utf8"),
       key: readFileSync(p.key, "utf8"),
     };
+    this.workspaces = new Workspaces(this);
   }
 
   config(): Config {
@@ -311,7 +314,7 @@ export class Bridge extends EventEmitter {
     return { fingerprint: machine.fingerprint, released: held.length };
   }
 
-  private claimName(fingerprint: string): void {
+  claimName(fingerprint: string): void {
     const { node } = this.store.peerByFingerprint(fingerprint)!;
     const trustedUnderName = this.store.peer(node);
     if (trustedUnderName !== undefined && trustedUnderName.fingerprint !== fingerprint) {

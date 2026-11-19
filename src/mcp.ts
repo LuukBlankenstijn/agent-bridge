@@ -11,6 +11,7 @@ import { assertName, VERSION } from "./config.js";
 import { discover, expandTargets, localRanges, tailscalePeers } from "./discovery.js";
 import { AGENT_HEADER, neutraliseTags, TRUST_GUIDE, type PushEvent, type Trust } from "./events.js";
 import { nodeOf, type Message } from "./store.js";
+import { MODES, POST_KINDS, type JoinRequest, type WorkspaceWake } from "./workspace.js";
 
 function trustOf(bridge: Bridge, m: Message): Trust {
   if (!bridge.isRemote(m)) return "local";
@@ -24,10 +25,6 @@ const TRUST_HINT: Record<Trust, string> = {
 };
 
 const PUSH_BODY_LIMIT = 4000;
-
-function result(value: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] };
-}
 
 function prompt(text: string) {
   return { messages: [{ role: "user" as const, content: { type: "text" as const, text } }] };
@@ -99,8 +96,37 @@ const attachmentPaths = z
   .optional()
   .describe("Absolute paths of files to attach. Files are sent next to the message, not inside the body.");
 
+export function workspaceEvent(bridge: Bridge, wake: WorkspaceWake): PushEvent {
+  const lines = wake.posts.map((p) => {
+    const parts = [`[${p.id}] ${p.author} trust=${bridge.workspaces.trust(wake.host, p.author)} ${p.kind}`];
+    if (p.to.length > 0) parts.push(`to ${p.to.join(", ")}`);
+    if (p.replyTo) parts.push(`reply to ${p.replyTo}`);
+    if (p.source) parts.push(`source=${p.source}${p.reliesOn ? ` relies_on=${p.reliesOn}` : ""}`);
+    const body = p.body.length > PUSH_BODY_LIMIT ? `${p.body.slice(0, PUSH_BODY_LIMIT)} [truncated; workspace_read]` : p.body;
+    return `${parts.join(" ")}: ${body}`;
+  });
+  if (wake.more > 0) lines.push(`(${wake.more} more unread workspace post(s); workspace_read)`);
+  if (wake.skipped) lines.push("(Some wake-ups were skipped because the workspace was very busy; read it to catch up.)");
+  return {
+    content: neutraliseTags(lines.join("\n")),
+    meta: { bridge: "agent-bridge", kind: "workspace", workspace: `${wake.workspace}@${wake.host}` },
+  };
+}
+
+export function joinEvent(join: JoinRequest): PushEvent {
+  return {
+    content: neutraliseTags(`${join.address} wants to join workspace ${join.workspace}. Only the user can let it in: /bridge accept ${join.address}`),
+    meta: { bridge: "agent-bridge", kind: "request", workspace: join.workspace, from: join.address },
+  };
+}
+
 export function agentServer(bridge: Bridge, agent: string): McpServer {
   const address = bridge.address(agent);
+  const result = (value: unknown) => {
+    const line = bridge.workspaces.unreadLine(agent);
+    const content = [{ type: "text" as const, text: JSON.stringify(value, null, 2) }];
+    return { content: line === undefined ? content : [...content, { type: "text" as const, text: line }] };
+  };
   const server = new McpServer(
     { name: "agent-bridge", version: VERSION },
     {
@@ -283,8 +309,8 @@ export function agentServer(bridge: Bridge, agent: string): McpServer {
         description,
         argsSchema: Object.fromEntries(args.map((arg) => [arg, z.string().optional().describe(arg)])),
       },
-      (values: Record<string, string | undefined>) =>
-        prompt(runCommand(bridge, agent, [name, ...args.map((arg) => values[arg] ?? "")].join(" "))),
+      async (values: Record<string, string | undefined>) =>
+        prompt(await runCommand(bridge, agent, [name, ...args.map((arg) => values[arg] ?? "")].join(" "))),
     );
   commandPrompt("machines", [], "List machines with their level, and conversations waiting for you.");
   commandPrompt("machine", ["name", "level", "fingerprint"], "Set a machine's level: unknown, known, trusted or blocked.");
@@ -292,6 +318,9 @@ export function agentServer(bridge: Bridge, agent: string): McpServer {
   commandPrompt("revoke", ["thread"], "Stop a conversation.");
   commandPrompt("listen", ["on"], "Interface or IP other machines reach this one on; restarts the daemon.");
   commandPrompt("restart", [], "Restart the daemon, e.g. after an update.");
+  commandPrompt("workspace", ["action", "name", "agent"], "List workspaces, or: new <name>, or: <name> desk <agent>.");
+  commandPrompt("questions", [], "Open user questions in all workspaces.");
+  commandPrompt("answer", ["id", "text"], "Answer a workspace question as the user.");
 
   server.registerTool(
     "discover",
@@ -320,6 +349,106 @@ export function agentServer(bridge: Bridge, agent: string): McpServer {
     },
   );
 
+  const workspaceRef = z.string().describe('Workspace: "name" on this machine, or "name@machine"');
+
+  server.registerTool(
+    "workspace_create",
+    {
+      description: "Create a shared workspace on this machine. You become its desk (you get the user questions) and follow all posts.",
+      inputSchema: { name: z.string() },
+    },
+    async ({ name }) => result({ workspace: bridge.workspaces.create(agent, name) }),
+  );
+
+  server.registerTool(
+    "workspace_join",
+    {
+      description:
+        'Join a workspace ("name" here, "name@machine" or "name@host:port"). From a machine the host does not know, the join ' +
+        "waits until its user accepts it.",
+      inputSchema: { workspace: workspaceRef },
+    },
+    async ({ workspace }) => result(await bridge.workspaces.join(agent, workspace)),
+  );
+
+  server.registerTool(
+    "workspace_leave",
+    { description: "Leave a workspace.", inputSchema: { workspace: workspaceRef } },
+    async ({ workspace }) => {
+      await bridge.workspaces.leave(agent, workspace);
+      return result({ left: workspace });
+    },
+  );
+
+  server.registerTool(
+    "workspace_post",
+    {
+      description:
+        "Post in a workspace. kind note (default; wakes only agents following all posts or this thread), request (wakes " +
+        "the agents in to), question (a question for the user; wakes the desk), answer (reply_to a question; source user " +
+        "if the user answered, desk if you answered from earlier posts, with relies_on). reply_to puts it in a thread.",
+      inputSchema: {
+        workspace: workspaceRef,
+        body: z.string(),
+        kind: z.enum(POST_KINDS).optional(),
+        to: z.array(z.string()).optional().describe('Agents to wake: "agent" (your machine) or "machine/agent"'),
+        reply_to: z.string().optional(),
+        source: z.enum(["user", "desk"]).optional(),
+        relies_on: z.string().optional(),
+      },
+    },
+    async ({ workspace, body, kind, to, reply_to, source, relies_on }) =>
+      result(
+        await bridge.workspaces.publish(agent, workspace, {
+          kind: kind ?? "note",
+          body,
+          to,
+          replyTo: reply_to,
+          source,
+          reliesOn: relies_on,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    "workspace_read",
+    {
+      description: "Read the posts you have not read yet in a workspace (all: true for the whole history). Each post has its trust.",
+      inputSchema: { workspace: workspaceRef, all: z.boolean().optional() },
+    },
+    async ({ workspace, all }) => result(await bridge.workspaces.read(agent, workspace, all ?? false)),
+  );
+
+  server.registerTool(
+    "workspace_mode",
+    {
+      description: 'How a workspace wakes you: "all" (every post, batched) or "mentions" (requests to you, threads you follow, answers to you).',
+      inputSchema: { workspace: workspaceRef, mode: z.enum(MODES) },
+    },
+    async ({ workspace, mode }) => {
+      await bridge.workspaces.mode(agent, workspace, mode);
+      return result({ workspace, mode });
+    },
+  );
+
+  server.registerTool(
+    "workspace_follow",
+    {
+      description: "Follow (or with on: false unfollow) the thread of a post, so replies in it wake you.",
+      inputSchema: { workspace: workspaceRef, post: z.string(), on: z.boolean().optional() },
+    },
+    async ({ workspace, post, on }) => {
+      await bridge.workspaces.follow(agent, workspace, post, on ?? true);
+      return result({ workspace, post, following: on ?? true });
+    },
+  );
+
+  server.registerTool(
+    "workspaces",
+    { description: "List your workspaces with desk, members and unread posts.", inputSchema: {} },
+    async () => result(await bridge.workspaces.list(agent)),
+  );
+
   return server;
 }
 
@@ -343,7 +472,16 @@ function streamEvents(bridge: Bridge, agent: string, req: IncomingMessage, res: 
   const onUndelivered = (event: UndeliveredEvent) => {
     if (event.message.from === address) push(undeliveredEvent(event));
   };
+  const onWorkspace = (wake: WorkspaceWake) => {
+    if (wake.agent === agent) push(workspaceEvent(bridge, wake));
+  };
+  const onJoin = (join: JoinRequest) => {
+    if (join.desk === address) push(joinEvent(join));
+  };
   for (const request of bridge.store.conversationRequests(address)) push(requestEvent({ agent, ...request }));
+  for (const join of bridge.workspaces.pendingJoins()) onJoin(join);
+  bridge.on("workspace", onWorkspace);
+  bridge.on("workspace-join", onJoin);
   const heartbeat = setInterval(() => res.write(": ping\n\n"), 30_000);
   bridge.on("message", onMessage);
   bridge.on("request", onRequest);
@@ -353,6 +491,8 @@ function streamEvents(bridge: Bridge, agent: string, req: IncomingMessage, res: 
     bridge.off("message", onMessage);
     bridge.off("request", onRequest);
     bridge.off("undelivered", onUndelivered);
+    bridge.off("workspace", onWorkspace);
+    bridge.off("workspace-join", onJoin);
   });
 }
 
@@ -375,7 +515,7 @@ export function startMcpHttp(bridge: Bridge, port: number): Promise<Server> {
       bridge.store.touchAgent(agent);
       if (req.method === "POST" && url.pathname === "/command") {
         const { text } = z.object({ text: z.string() }).parse(await readJson(req));
-        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ text: runCommand(bridge, agent, text) }));
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ text: await runCommand(bridge, agent, text) }));
         return;
       }
       if (req.method === "GET" && url.pathname === "/complete") {

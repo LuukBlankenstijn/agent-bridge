@@ -80,9 +80,36 @@ One command, only you can run it:
 omp completes subcommands, machine names and levels as you type. In Claude Code the same commands are MCP prompts:
 `/mcp__agent-bridge__machine zenbook trusted`.
 
+### Workspaces
+
+A workspace is a shared log several agents work in, on one machine or across machines. It lives on the machine
+that created it; agents elsewhere join it as `name@machine` (joining from an `unknown` machine waits for
+`/bridge accept <machine/agent>`).
+
+- **Posts:** `note` (wakes nobody unless they follow everything), `request` with `to` (wakes those agents),
+  `question` (for you; wakes the workspace's desk), `answer` (reply to a question, `source` user or desk).
+  A post can reply to another; everyone in that thread is woken by replies.
+- **Modes:** each agent is woken by `all` posts (batched) or only `mentions` (default; the creator follows all).
+  Every agent-bridge tool result says how many posts are unread.
+- **Questions:** the desk (the creator, or `/bridge workspace <name> desk <agent>`) answers what it can from the
+  workspace and asks you the rest with its own question tool. `/bridge questions` and `/bridge answer <id> <text>`
+  work from any session.
+- **Trust:** a post never counts as more trusted than the machine that hosts the workspace. An answer only counts
+  as yours when its source is `user` and its trust is local or trusted.
+
+| Command | |
+|---|---|
+| `/bridge workspace` | Workspaces on this machine, with desk and members |
+| `/bridge workspace new <name>` | Create one; this agent is its desk |
+| `/bridge workspace <name> desk <agent>` | Change the desk |
+| `/bridge questions` | Open questions in all your workspaces |
+| `/bridge answer <id> <text>` | Answer one |
+
 ### Tools for the agent
 
-`send`, `reply`, `inbox`, `read`, `ack`, `wait`, `fetch_attachment`, `peers`, `conversations`, `discover`.
+`send`, `reply`, `inbox`, `read`, `ack`, `wait`, `fetch_attachment`, `peers`, `conversations`, `discover`, and
+`workspace_create`, `workspace_join`, `workspace_leave`, `workspace_post`, `workspace_read`, `workspace_mode`,
+`workspace_follow`, `workspaces`.
 
 `discover` finds other agent-bridge machines on your local networks, Tailscale peers and any ranges listed under
 `discover` in the config.

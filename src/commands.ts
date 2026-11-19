@@ -67,7 +67,33 @@ function machine(bridge: Bridge, name: string | undefined, level: string | undef
   return `Machine "${name}" (${chosen}) is now ${level}: ${LEVEL_DESCRIPTIONS[level as MachineLevel]}.${delivered}`;
 }
 
-export function runCommand(bridge: Bridge, agent: string, text: string): string {
+function workspace(bridge: Bridge, agent: string, args: string[]): string {
+  if (args[0] === "new" && args[1] !== undefined) {
+    return `Created workspace ${bridge.workspaces.create(agent, args[1])}; ${bridge.address(agent)} is its desk.`;
+  }
+  if (args[1] === "desk" && args[2] !== undefined) {
+    bridge.workspaces.setDesk(args[0], args[2]);
+    return `The desk of workspace ${args[0]} is now ${args[2]}.`;
+  }
+  if (args.length > 0) return `Usage: /bridge ${SUBCOMMANDS.workspace.usage}`;
+  const hosted = bridge.store.db.prepare("SELECT name FROM ws_workspaces ORDER BY name").all();
+  if (hosted.length === 0) return "No workspaces on this machine.";
+  return hosted
+    .map((r) => {
+      const info = bridge.workspaces.hostInfo(String(r.name));
+      const members = info.members.map((m) => `${m.address}${m.status === "pending" ? " (waiting)" : ` (${m.mode})`}`);
+      return `${String(r.name)}: desk ${info.desk}; ${members.join(", ")}`;
+    })
+    .join("\n");
+}
+
+async function questions(bridge: Bridge): Promise<string> {
+  const open = await bridge.workspaces.questions();
+  if (open.length === 0) return "No open questions.";
+  return open.map((q) => `${q.post.id}  ${q.workspace}  ${q.post.author}: ${q.post.body}`).join("\n");
+}
+
+export async function runCommand(bridge: Bridge, agent: string, text: string): Promise<string> {
   const [sub, ...args] = text.trim().split(/\s+/).filter(Boolean);
   try {
     switch (sub) {
@@ -77,8 +103,23 @@ export function runCommand(bridge: Bridge, agent: string, text: string): string 
         return machines(bridge, agent);
       case "machine":
         return machine(bridge, args[0], args[1], args[2]);
-      case "accept":
+      case "accept": {
+        if (args[0]?.includes("/")) {
+          const joined = bridge.workspaces.acceptJoin(args[0]);
+          return joined.length === 0 ? `${args[0]} is not waiting to join a workspace here.` : `${args[0]} joined ${joined.join(", ")}.`;
+        }
         return accept(bridge, agent, args[0]);
+      }
+      case "workspace":
+        return workspace(bridge, agent, args);
+      case "questions":
+        return await questions(bridge);
+      case "answer": {
+        const [id, ...words] = args;
+        if (id === undefined || words.length === 0) return `Usage: /bridge ${SUBCOMMANDS.answer.usage}`;
+        const answered = await bridge.workspaces.answerAsUser(agent, id, text.trim().split(/\s+/).slice(2).join(" "));
+        return `Answered question ${id} in ${answered.workspace}.`;
+      }
       case "revoke":
         if (args[0] === undefined) return `Usage: /bridge ${SUBCOMMANDS.revoke.usage}`;
         return bridge.revoke(agent, args[0]) === 0

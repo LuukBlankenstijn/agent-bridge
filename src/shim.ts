@@ -58,6 +58,8 @@ async function stopDaemon(config: Config): Promise<void> {
   }
 }
 
+const REPLACE_ATTEMPTS = 3;
+
 async function connectOrStartDaemon(config: Config, agent: string, dir: string): Promise<Client> {
   let client: Client;
   try {
@@ -65,23 +67,32 @@ async function connectOrStartDaemon(config: Config, agent: string, dir: string):
   } catch {
     client = await startAndConnect(config, agent, dir);
   }
-  const running = client.getServerVersion()?.version ?? "0.0.0";
-  if (!isOlder(running, VERSION)) return client;
-  await client.close();
-  await stopDaemon(config);
-  return startAndConnect(config, agent, dir, true);
+  for (let attempt = 0; attempt < REPLACE_ATTEMPTS; attempt++) {
+    if (!isOlder(client.getServerVersion()?.version ?? "0.0.0", VERSION)) return client;
+    await client.close();
+    await stopDaemon(config);
+    client = await startAndConnect(config, agent, dir, true);
+  }
+  return client;
 }
 
 export async function runStdioShim(agent: string, dir: string): Promise<void> {
   const config = await ensureSetup(dir);
   let client = await connectOrStartDaemon(config, agent, dir);
+  let reconnecting: Promise<Client> | undefined;
+  const reconnect = () => {
+    reconnecting ??= connectOrStartDaemon(config, agent, dir).finally(() => {
+      reconnecting = undefined;
+    });
+    return reconnecting;
+  };
 
   const forward = async <T>(request: (client: Client) => Promise<T>): Promise<T> => {
     try {
       return await request(client);
     } catch (error) {
       if (!connectionRefused(error)) throw error;
-      client = await connectOrStartDaemon(config, agent, dir);
+      client = await reconnect();
       return request(client);
     }
   };
@@ -108,7 +119,7 @@ export async function runStdioShim(agent: string, dir: string): Promise<void> {
           await server.notification({ method: "notifications/claude/channel", params: event });
         }
       } catch (error) {
-        if (connectionRefused(error)) client = await connectOrStartDaemon(config, agent, dir).catch(() => client);
+        if (connectionRefused(error)) client = await reconnect().catch(() => client);
       }
       await sleep(1000);
     }

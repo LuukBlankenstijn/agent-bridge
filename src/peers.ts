@@ -78,6 +78,11 @@ async function handle(bridge: Bridge, req: IncomingMessage, res: ServerResponse)
     send(res, 200, { state: bridge.receive(peer, await readJson(req)) });
     return;
   }
+  const workspaceOp = /^\/workspaces\/([a-z]+)$/.exec(pathname);
+  if (req.method === "POST" && workspaceOp) {
+    send(res, 200, bridge.workspaces.handlePeer(peer, workspaceOp[1], await readJson(req)));
+    return;
+  }
   if (req.method === "POST" && pathname === "/receipts") {
     if (!peer.verified) throw new PeerError(403, "receipts are accepted only from known machines");
     const parsed = receipt.safeParse(await readJson(req));

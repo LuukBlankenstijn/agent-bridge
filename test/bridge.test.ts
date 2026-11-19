@@ -48,7 +48,10 @@ async function createNode(node: string): Promise<Node> {
   const result: Node = {
     dir,
     config,
-    daemon: await startDaemon(dir, 100),
+    daemon: await startDaemon(dir, 100).then((d) => {
+      d.bridge.workspaces.batchMs = 50;
+      return d;
+    }),
     async agent(name) {
       const client = new Client({ name: `test-${name}`, version: "0" });
       await client.connect(
@@ -390,6 +393,119 @@ describe("agents on two machines", () => {
 
     bob.daemon = await startDaemon(bob.dir, 100);
     await eventually(() => bob.daemon.bridge.store.message(opened.id), "delivery after restart");
+  });
+});
+
+describe("workspaces", () => {
+  let home: Node;
+  let away: Node;
+  let lead: Client;
+  let dev: Client;
+  let ops: Client;
+  let leadEvents: PushEvent[];
+  let devEvents: PushEvent[];
+  let opsEvents: PushEvent[];
+  const wsEvents = (events: PushEvent[]) => events.filter((e) => e.meta.kind === "workspace");
+
+  before(async () => {
+    home = await createNode("home");
+    away = await createNode("away");
+    lead = await home.agent("lead");
+    dev = await home.agent("dev");
+    ops = await home.agent("ops");
+    leadEvents = home.events("lead");
+    devEvents = home.events("dev");
+    opsEvents = home.events("ops");
+    await sleep(100);
+  });
+
+  test("notes wake only agents in mode all; others see an unread count and read what is new", async () => {
+    assert.deepEqual(await call(lead, "workspace_create", { name: "jetson" }), { workspace: "jetson@home" });
+    assert.equal((await call(dev, "workspace_join", { workspace: "jetson" })).status, "joined");
+    await call(ops, "workspace_join", { workspace: "jetson" });
+
+    const note = await call(dev, "workspace_post", { workspace: "jetson", body: "card built" });
+    const woken = await eventually(() => wsEvents(leadEvents).find((e) => e.content.includes(note.id)), "lead woken");
+    assert.match(woken.content, /home\/dev trust=local note: card built/);
+    await sleep(200);
+    assert.equal(wsEvents(opsEvents).length, 0);
+
+    const response = await ops.callTool({ name: "workspaces", arguments: {} });
+    assert.match((response.content as { text: string }[])[1].text, /1 in jetson@home/);
+    const unread = await call(ops, "workspace_read", { workspace: "jetson" });
+    assert.deepEqual(unread.map((p: { id: string; trust: string }) => [p.id, p.trust]), [[note.id, "local"]]);
+    assert.deepEqual(await call(ops, "workspace_read", { workspace: "jetson" }), []);
+  });
+
+  test("requests wake the agents named; replies wake everyone in the thread", async () => {
+    const request = await call(ops, "workspace_post", { workspace: "jetson", kind: "request", to: ["dev"], body: "flash it?" });
+    await eventually(() => wsEvents(devEvents).find((e) => e.content.includes(request.id)), "dev woken by request");
+    const reply = await call(dev, "workspace_post", { workspace: "jetson", reply_to: request.id, body: "flashing now" });
+    const back = await eventually(() => wsEvents(opsEvents).find((e) => e.content.includes(reply.id)), "ops woken by reply");
+    assert.match(back.content, new RegExp(`reply to ${request.id}`));
+  });
+
+  test("questions wake the desk; the user's answer goes back to the asker", async () => {
+    await call(lead, "workspace_mode", { workspace: "jetson", mode: "mentions" });
+    const before = wsEvents(leadEvents).length;
+    const question = await call(dev, "workspace_post", { workspace: "jetson", kind: "question", body: "r36 or r39 card?" });
+    await eventually(() => (wsEvents(leadEvents).length > before ? true : undefined), "desk woken by question");
+    assert.match(await bridgeCommand(home, "lead", "questions"), new RegExp(`${question.id} {2}jetson@home {2}home/dev: r36 or r39`));
+    assert.match(await bridgeCommand(home, "lead", `answer ${question.id} r39 please`), /Answered/);
+    const answer = await eventually(() => wsEvents(devEvents).find((e) => e.content.includes("source=user")), "asker woken by answer");
+    assert.match(answer.content, /answer reply to .* source=user: r39 please/);
+    assert.match(await bridgeCommand(home, "lead", "questions"), /No open questions/);
+    await assert.rejects(
+      call(dev, "workspace_post", { workspace: "jetson", kind: "answer", reply_to: question.id, body: "x" }),
+      /source/,
+    );
+  });
+
+  test("an agent on an unknown machine waits for acceptance; posts carry the reader's trust", async () => {
+    const guest = await away.agent("guest");
+    const guestEvents = away.events("guest");
+    await sleep(100);
+    const joined = await call(guest, "workspace_join", { workspace: `jetson@127.0.0.1:${home.config.peerPort}` });
+    assert.deepEqual(joined, { workspace: "jetson@home", status: "pending" });
+    await eventually(() => leadEvents.find((e) => e.meta.kind === "request" && e.meta.from === "away/guest"), "join request to desk");
+    await assert.rejects(call(guest, "workspace_post", { workspace: "jetson@home", body: "let me in" }), /not a member/);
+
+    assert.match(await bridgeCommand(home, "lead", "accept away/guest"), /joined jetson/);
+    await call(guest, "workspace_mode", { workspace: "jetson@home", mode: "all" });
+    const fromGuest = await call(guest, "workspace_post", { workspace: "jetson@home", body: "hello from away" });
+    const atHome = (await call(ops, "workspace_read", { workspace: "jetson" })).find((p: { id: string }) => p.id === fromGuest.id);
+    assert.equal(atHome.trust, "untrusted");
+
+    const fromDev = await call(dev, "workspace_post", { workspace: "jetson", body: "welcome" });
+    const pushed = await eventually(() => wsEvents(guestEvents).find((e) => e.content.includes(fromDev.id)), "remote member woken");
+    assert.match(pushed.content, /home\/dev trust=untrusted note: welcome/);
+    const { yourCertificate } = await call(lead, "peers");
+    await bridgeCommand(away, "guest", `machine home trusted ${yourCertificate.slice(0, 23)}`);
+    const reread = await call(guest, "workspace_read", { workspace: "jetson@home", all: true });
+    assert.equal(reread.find((p: { id: string }) => p.id === fromDev.id).trust, "trusted");
+  });
+
+  test("an agent is woken at most 10 times a minute by a busy workspace", async () => {
+    const busy = await home.agent("busy");
+    const busyEvents = home.events("busy");
+    await sleep(100);
+    await call(busy, "workspace_join", { workspace: "jetson" });
+    await call(busy, "workspace_mode", { workspace: "jetson", mode: "all" });
+    for (let i = 0; i < 12; i++) {
+      await call(dev, "workspace_post", { workspace: "jetson", body: `chatter ${i}` });
+      await sleep(80);
+    }
+    await sleep(200);
+    assert.equal(wsEvents(busyEvents).length, 10);
+    assert.equal((await call(busy, "workspace_read", { workspace: "jetson" })).length, 12);
+  });
+
+  test("a post never counts as more trusted than the machine hosting the workspace", () => {
+    const ws = away.daemon.bridge.workspaces;
+    assert.equal(ws.trust("stranger", "away/guest"), "untrusted");
+    assert.equal(ws.trust("home", "away/guest"), "trusted");
+    assert.equal(ws.trust("away", "home/dev"), "trusted");
+    assert.equal(ws.trust("away", "away/guest"), "local");
   });
 });
 
