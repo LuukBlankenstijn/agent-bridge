@@ -1,6 +1,6 @@
 {
   "name": "@luukblankenstijn/agent-bridge",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Peer-to-peer mailbox for AI agents, exposed as an MCP server",
   "type": "module",
   "license": "MIT",
