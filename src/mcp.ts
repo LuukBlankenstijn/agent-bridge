@@ -323,9 +323,9 @@ export function agentServer(bridge: Bridge, agent: string): McpServer {
   commandPrompt("answer", ["id", "text"], "Answer a workspace question as the user.");
   commandPrompt("todo", ["workspace", "text"], "Add a todo to a workspace.");
   commandPrompt("todos", ["workspace"], "Open todos in one or all workspaces.");
-  commandPrompt("done", ["id"], "Tick off a workspace todo.");
-  commandPrompt("undo", ["id"], "Reopen a workspace todo.");
-  commandPrompt("drop", ["id"], "Remove a workspace todo.");
+  commandPrompt("done", ["id", "workspace"], "Tick off a workspace todo.");
+  commandPrompt("undo", ["id", "workspace"], "Reopen a workspace todo.");
+  commandPrompt("drop", ["id", "workspace"], "Remove a workspace todo.");
 
   server.registerTool(
     "discover",

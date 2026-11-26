@@ -63,6 +63,16 @@ export interface Todo {
 const LOOP_WINDOW_MS = 60_000;
 const LOOP_LIMIT = 10;
 
+const ID = z.string().regex(/^[0-9a-f]{12}$/);
+const ADDRESS = z.string().refine((address) => {
+  try {
+    splitAddress(address);
+    return true;
+  } catch {
+    return false;
+  }
+}, "invalid address");
+
 const postInput = z.object({
   kind: z.enum(POST_KINDS),
   body: z.string().min(1),
@@ -73,15 +83,15 @@ const postInput = z.object({
 });
 
 const postSchema = z.object({
-  id: z.string(),
-  author: z.string(),
+  id: ID,
+  author: ADDRESS,
   kind: z.enum(POST_KINDS),
   body: z.string(),
-  replyTo: z.string().nullable(),
-  root: z.string(),
-  to: z.array(z.string()),
+  replyTo: ID.nullable(),
+  root: ID,
+  to: z.array(ADDRESS),
   source: z.enum(["user", "desk"]).nullable(),
-  reliesOn: z.string().nullable(),
+  reliesOn: ID.nullable(),
   created: z.string(),
 });
 
@@ -91,12 +101,12 @@ const todoChange = z.discriminatedUnion("action", [
 ]);
 
 const todoSchema = z.object({
-  id: z.string(),
+  id: ID,
   text: z.string(),
-  addedBy: z.string(),
+  addedBy: ADDRESS,
   source: z.literal("user").nullable(),
   done: z.boolean(),
-  doneBy: z.string().nullable(),
+  doneBy: ADDRESS.nullable(),
   created: z.string(),
 });
 
@@ -198,6 +208,9 @@ export class Workspaces {
     const parsed: unknown = JSON.parse(response.body || "{}");
     if (response.status !== 200) {
       const error = z.object({ error: z.string() }).safeParse(parsed);
+      if (response.status === 404 && error.success && error.data.error === "not found") {
+        throw new Error(`${host} runs an older agent-bridge that cannot do "${op}"; update it`);
+      }
       throw new Error(error.success ? error.data.error : `HTTP ${response.status}`);
     }
     return parsed;
@@ -625,24 +638,51 @@ export class Workspaces {
     }));
   }
 
-  private async enterAsUser(agent: string, workspace: string): Promise<void> {
+  async resolve(ref: string): Promise<string> {
+    const { name, host } = await this.locate(ref);
+    const known =
+      host === this.me
+        ? this.db.prepare("SELECT 1 FROM ws_workspaces WHERE name = ?").get(name)
+        : this.db.prepare("SELECT 1 FROM ws_remote WHERE workspace = ? AND host = ?").get(name, host);
+    if (known === undefined) throw new Error(`no agent here is in workspace ${name}@${host}`);
+    return `${name}@${host}`;
+  }
+
+  private async actingFor(agent: string, workspace: string): Promise<string> {
+    const { name, host } = await this.locate(workspace);
+    const inside =
+      host === this.me
+        ? this.db
+            .prepare(
+              `SELECT m.address FROM ws_members m JOIN ws_workspaces w ON w.name = m.workspace
+               WHERE m.workspace = ? AND m.status = 'joined' ORDER BY m.address = w.desk DESC, m.address`,
+            )
+            .all(name)
+            .map((r) => String(r.address))
+            .filter((address) => nodeOf(address) === this.me)
+            .map((address) => splitAddress(address).agent)
+        : this.db.prepare("SELECT agent FROM ws_remote WHERE workspace = ? AND host = ? ORDER BY agent").all(name, host).map((r) => String(r.agent));
+    if (inside.includes(agent)) return agent;
+    if (inside.length > 0) return inside[0];
     const joined = await this.join(agent, workspace);
-    if (joined.status !== "joined") throw new Error(`${this.bridge.address(agent)} is waiting to be let into ${workspace}`);
+    if (joined.status === "joined") return agent;
+    await this.leave(agent, workspace);
+    throw new Error(`no agent here is in ${workspace} yet; ask its host to let one in`);
   }
 
   async answerAsUser(agent: string, questionId: string, text: string): Promise<{ workspace: string; post: Post }> {
     const question = (await this.questions()).find((q) => q.post.id === questionId);
     if (question === undefined) throw new Error(`no open question ${questionId}`);
-    await this.enterAsUser(agent, question.workspace);
-    const post = await this.publish(agent, question.workspace, { kind: "answer", body: text, replyTo: questionId, source: "user" });
+    const actor = await this.actingFor(agent, question.workspace);
+    const post = await this.publish(actor, question.workspace, { kind: "answer", body: text, replyTo: questionId, source: "user" });
     return { workspace: question.workspace, post };
   }
 
   async addTodoAsUser(agent: string, ref: string, text: string): Promise<{ workspace: string; todo: Todo }> {
     const { name, host } = await this.locate(ref);
     const workspace = `${name}@${host}`;
-    await this.enterAsUser(agent, workspace);
-    return { workspace, todo: await this.todo(agent, workspace, { action: "add", text, source: "user" }) };
+    const actor = await this.actingFor(agent, workspace);
+    return { workspace, todo: await this.todo(actor, workspace, { action: "add", text, source: "user" }) };
   }
 
   async changeTodoAsUser(
@@ -651,14 +691,13 @@ export class Workspaces {
     action: "done" | "reopen" | "remove",
     ref?: string,
   ): Promise<{ workspace: string; todo: Todo }> {
-    const matches = (await this.allTodos(true)).filter(
-      (t) => t.todo.id === id && (ref === undefined || t.workspace === ref || t.workspace.startsWith(`${ref}@`)),
-    );
-    if (matches.length === 0) throw new Error(`no todo ${id}${ref === undefined ? "" : ` in ${ref}`}`);
+    const workspace = ref === undefined ? undefined : await this.resolve(ref);
+    const matches = (await this.allTodos(true)).filter((t) => t.todo.id === id && (workspace === undefined || t.workspace === workspace));
+    if (matches.length === 0) throw new Error(`no todo ${id}${workspace === undefined ? "" : ` in ${workspace}`}`);
     if (matches.length > 1) throw new Error(`todo ${id} exists in ${matches.map((m) => m.workspace).join(" and ")}; add the workspace`);
     const found = matches[0];
-    await this.enterAsUser(agent, found.workspace);
-    return { workspace: found.workspace, todo: await this.todo(agent, found.workspace, { action, id }) };
+    const actor = await this.actingFor(agent, found.workspace);
+    return { workspace: found.workspace, todo: await this.todo(actor, found.workspace, { action, id }) };
   }
 
   handlePeer(peer: Peer, op: string, payload: unknown): unknown {

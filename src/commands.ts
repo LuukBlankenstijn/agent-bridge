@@ -99,8 +99,9 @@ const oneLine = (text: string) => neutraliseTags(text.replace(/\s+/g, " "));
 const fromUser = (todo: { source: string | null; trust: Trust }) => todo.source === "user" && todo.trust !== "untrusted";
 
 async function todos(bridge: Bridge, ref: string | undefined): Promise<string> {
-  const open = (await bridge.workspaces.allTodos(false)).filter((t) => ref === undefined || t.workspace === ref || t.workspace.startsWith(`${ref}@`));
-  if (open.length === 0) return `No open todos${ref === undefined ? "" : ` in ${ref}`}.`;
+  const workspace = ref === undefined ? undefined : await bridge.workspaces.resolve(ref);
+  const open = (await bridge.workspaces.allTodos(false)).filter((t) => workspace === undefined || t.workspace === workspace);
+  if (open.length === 0) return `No open todos${workspace === undefined ? "" : ` in ${workspace}`}.`;
   return open
     .map(({ workspace, todo }) => `${todo.id}  ${workspace}  ${oneLine(todo.text)}  (${fromUser(todo) ? "you" : `${todo.addedBy}, ${todo.trust}`})`)
     .join("\n");
@@ -200,7 +201,11 @@ export function completeCommand(bridge: Bridge, agent: string, prefix: string): 
   }
   const hosted = () => bridge.store.db.prepare("SELECT name FROM ws_workspaces ORDER BY name").all().map((r) => String(r.name));
   if ((sub === "todo" || sub === "todos") && words.length === 1) {
-    return options(hosted().map((name) => ({ label: name, value: name, description: "workspace" })));
+    const joined = bridge.store.db
+      .prepare("SELECT DISTINCT workspace || '@' || host AS ref FROM ws_remote ORDER BY ref")
+      .all()
+      .map((r) => String(r.ref));
+    return options([...hosted(), ...joined].map((ref) => ({ label: ref, value: ref, description: "workspace" })));
   }
   if ((sub === "done" || sub === "undo" || sub === "drop") && words.length === 1) {
     return options(
@@ -208,7 +213,11 @@ export function completeCommand(bridge: Bridge, agent: string, prefix: string): 
         bridge.workspaces
           .hostTodos(name, true)
           .filter((t) => t.done === (sub === "undo"))
-          .map((t) => ({ label: t.id, value: t.id, description: `${name}: ${t.text}` })),
+          .map((t) => ({
+            label: t.id,
+            value: t.id,
+            description: `${name}: ${oneLine(t.text)} (${t.addedBy}, ${bridge.workspaces.trust(bridge.identity.node, t.addedBy)})`,
+          })),
       ),
     );
   }
