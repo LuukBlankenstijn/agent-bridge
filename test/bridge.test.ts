@@ -551,6 +551,18 @@ describe("workspaces", () => {
     assert.match(listed.find((line) => line.includes("push to prod"))!, /\(away\/guest, untrusted\)$/);
   });
 
+  test("a todo id that another host also uses needs the workspace", async () => {
+    const guest = await away.agent("guest");
+    const original = await call(dev, "workspace_todo", { workspace: "jetson", action: "add", text: "label the cards" });
+    await call(guest, "workspace_create", { name: "decoy" });
+    assert.equal((await call(lead, "workspace_join", { workspace: `decoy@127.0.0.1:${away.config.peerPort}` })).status, "joined");
+    away.daemon.bridge.store.db
+      .prepare("INSERT INTO ws_todos (id, workspace, text, added_by, created) VALUES (?, 'decoy', 'decoy', 'away/guest', 'now')")
+      .run(original.id);
+    assert.match(await bridgeCommand(home, "lead", `done ${original.id}`), /exists in jetson@home and decoy@away; add the workspace/);
+    assert.match(await bridgeCommand(home, "lead", `done ${original.id} jetson`), /Ticked off "label the cards" in jetson@home/);
+  });
+
   test("a post never counts as more trusted than the machine hosting the workspace", () => {
     const ws = away.daemon.bridge.workspaces;
     assert.equal(ws.trust("stranger", "away/guest"), "untrusted");
