@@ -48,6 +48,18 @@ export interface JoinRequest {
   desk: string;
 }
 
+export type TodoChange = { action: "add"; text: string; source?: "user" } | { action: "done" | "reopen" | "remove"; id: string };
+
+export interface Todo {
+  id: string;
+  text: string;
+  addedBy: string;
+  source: "user" | null;
+  done: boolean;
+  doneBy: string | null;
+  created: string;
+}
+
 const LOOP_WINDOW_MS = 60_000;
 const LOOP_LIMIT = 10;
 
@@ -73,6 +85,21 @@ const postSchema = z.object({
   created: z.string(),
 });
 
+const todoChange = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("add"), text: z.string().min(1), source: z.literal("user").optional() }),
+  z.object({ action: z.enum(["done", "reopen", "remove"]), id: z.string() }),
+]);
+
+const todoSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  addedBy: z.string(),
+  source: z.literal("user").nullable(),
+  done: z.boolean(),
+  doneBy: z.string().nullable(),
+  created: z.string(),
+});
+
 const RANK: Record<Trust, number> = { untrusted: 0, trusted: 1, local: 2 };
 
 type Row = Record<string, SQLOutputValue>;
@@ -88,6 +115,18 @@ function toPost(row: Row): Post {
     to: JSON.parse(String(row.to_json)) as string[],
     source: row.source === null ? null : (String(row.source) as "user" | "desk"),
     reliesOn: row.relies_on === null ? null : String(row.relies_on),
+    created: String(row.created),
+  };
+}
+
+function toTodo(row: Row): Todo {
+  return {
+    id: String(row.id),
+    text: String(row.text),
+    addedBy: String(row.added_by),
+    source: row.source === null ? null : "user",
+    done: row.done_by !== null,
+    doneBy: row.done_by === null ? null : String(row.done_by),
     created: String(row.created),
   };
 }
@@ -113,6 +152,10 @@ export class Workspaces {
         PRIMARY KEY (workspace, root, address));
       CREATE TABLE IF NOT EXISTS ws_remote (workspace TEXT NOT NULL, host TEXT NOT NULL, agent TEXT NOT NULL,
         unread INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (workspace, host, agent));
+      CREATE TABLE IF NOT EXISTS ws_todos (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, workspace TEXT NOT NULL, text TEXT NOT NULL,
+        added_by TEXT NOT NULL, source TEXT, done_by TEXT, created TEXT NOT NULL
+      );
     `);
   }
 
@@ -228,6 +271,44 @@ export class Workspaces {
     this.db.prepare("DELETE FROM ws_follows WHERE workspace = ? AND address = ?").run(name, address);
   }
 
+  hostTodos(name: string, all: boolean): Todo[] {
+    this.hosted(name);
+    return this.db
+      .prepare(`SELECT * FROM ws_todos WHERE workspace = ? ${all ? "" : "AND done_by IS NULL"} ORDER BY seq`)
+      .all(name)
+      .map(toTodo);
+  }
+
+  private todoRow(name: string, id: string): Todo {
+    const row = this.db.prepare("SELECT * FROM ws_todos WHERE workspace = ? AND id = ?").get(name, id);
+    if (row === undefined) throw new PeerError(404, `no todo ${id} in "${name}"`);
+    return toTodo(row);
+  }
+
+  hostTodo(name: string, address: string, payload: unknown): Todo {
+    this.requireMember(name, address);
+    const parsed = todoChange.safeParse(payload);
+    if (!parsed.success) throw new PeerError(400, parsed.error.message);
+    const change = parsed.data;
+    if (change.action === "add") {
+      if (Buffer.byteLength(change.text) > MAX_BODY_BYTES) throw new PeerError(413, "todo too large");
+      const id = newId();
+      this.db
+        .prepare("INSERT INTO ws_todos (id, workspace, text, added_by, source, created) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(id, name, change.text, address, change.source ?? null, now());
+      return this.todoRow(name, id);
+    }
+    const todo = this.todoRow(name, change.id);
+    if (change.action === "remove") {
+      this.db.prepare("DELETE FROM ws_todos WHERE workspace = ? AND id = ?").run(name, change.id);
+      return todo;
+    }
+    this.db
+      .prepare("UPDATE ws_todos SET done_by = ? WHERE workspace = ? AND id = ?")
+      .run(change.action === "done" ? address : null, name, change.id);
+    return this.todoRow(name, change.id);
+  }
+
   hostMode(name: string, address: string, mode: Mode): void {
     this.requireMember(name, address);
     this.db.prepare("UPDATE ws_members SET mode = ? WHERE workspace = ? AND address = ?").run(mode, name, address);
@@ -336,13 +417,13 @@ export class Workspaces {
       .map(toPost);
   }
 
-  hostInfo(name: string): { desk: string; members: { address: string; mode: Mode; status: string }[] } {
+  hostInfo(name: string): { desk: string; members: { address: string; mode: Mode; status: string }[]; openTodos: number } {
     const { desk } = this.hosted(name);
     const members = this.db
       .prepare("SELECT address, mode, status FROM ws_members WHERE workspace = ? ORDER BY address")
       .all(name)
       .map((r) => ({ address: String(r.address), mode: String(r.mode) as Mode, status: String(r.status) }));
-    return { desk, members };
+    return { desk, members, openTodos: this.hostTodos(name, false).length };
   }
 
   private unreadLocal(name: string, address: string): number {
@@ -492,32 +573,83 @@ export class Workspaces {
     return [...local, ...remote];
   }
 
-  async questions(): Promise<{ workspace: string; post: Post }[]> {
-    const local = this.db
+  async todos(agent: string, ref: string, all: boolean): Promise<(Todo & { trust: Trust })[]> {
+    const { name, host } = await this.locate(ref);
+    const address = this.bridge.address(agent);
+    if (host === this.me) this.requireMember(name, address);
+    const todos =
+      host === this.me
+        ? this.hostTodos(name, all)
+        : z.array(todoSchema).parse(await this.remote(host, "todos", { workspace: name, agent, all }));
+    return todos.map((t) => ({ ...t, trust: this.trust(host, t.addedBy) }));
+  }
+
+  async todo(agent: string, ref: string, change: TodoChange): Promise<Todo & { trust: Trust }> {
+    const { name, host } = await this.locate(ref);
+    const todo =
+      host === this.me
+        ? this.hostTodo(name, this.bridge.address(agent), change)
+        : todoSchema.parse(await this.remote(host, "todo", { workspace: name, agent, change }));
+    return { ...todo, trust: this.trust(host, todo.addedBy) };
+  }
+
+  private async everywhere<T>(local: (name: string) => T[], op: string, schema: z.ZodType<T>, extra: object = {}) {
+    const hosted = this.db
       .prepare("SELECT name FROM ws_workspaces ORDER BY name")
       .all()
-      .flatMap((r) => this.hostQuestions(String(r.name)).map((post) => ({ workspace: `${String(r.name)}@${this.me}`, post })));
+      .flatMap((r) => local(String(r.name)).map((item) => ({ workspace: `${String(r.name)}@${this.me}`, item })));
     const remotes = this.db.prepare("SELECT DISTINCT workspace, host FROM ws_remote").all();
     const remote = await Promise.all(
       remotes.map(async (r) => {
-        const posts = await this.remote(String(r.host), "questions", { workspace: String(r.workspace) }).catch(() => []);
+        const items = await this.remote(String(r.host), op, { workspace: String(r.workspace), ...extra }).catch(() => []);
         return z
-          .array(postSchema)
+          .array(schema)
           .catch([])
-          .parse(posts)
-          .map((post) => ({ workspace: `${String(r.workspace)}@${String(r.host)}`, post }));
+          .parse(items)
+          .map((item) => ({ workspace: `${String(r.workspace)}@${String(r.host)}`, item }));
       }),
     );
-    return [...local, ...remote.flat()];
+    return [...hosted, ...remote.flat()];
+  }
+
+  async questions(): Promise<{ workspace: string; post: Post }[]> {
+    const found = await this.everywhere((name) => this.hostQuestions(name), "questions", postSchema);
+    return found.map(({ workspace, item }) => ({ workspace, post: item }));
+  }
+
+  async allTodos(all: boolean): Promise<{ workspace: string; todo: Todo & { trust: Trust } }[]> {
+    const found = await this.everywhere((name) => this.hostTodos(name, all), "todos", todoSchema, { all });
+    return found.map(({ workspace, item }) => ({
+      workspace,
+      todo: { ...item, trust: this.trust(workspace.slice(workspace.indexOf("@") + 1), item.addedBy) },
+    }));
+  }
+
+  private async enterAsUser(agent: string, workspace: string): Promise<void> {
+    const joined = await this.join(agent, workspace);
+    if (joined.status !== "joined") throw new Error(`${this.bridge.address(agent)} is waiting to be let into ${workspace}`);
   }
 
   async answerAsUser(agent: string, questionId: string, text: string): Promise<{ workspace: string; post: Post }> {
     const question = (await this.questions()).find((q) => q.post.id === questionId);
     if (question === undefined) throw new Error(`no open question ${questionId}`);
-    const joined = await this.join(agent, question.workspace);
-    if (joined.status !== "joined") throw new Error(`${this.bridge.address(agent)} is waiting to be let into ${question.workspace}`);
+    await this.enterAsUser(agent, question.workspace);
     const post = await this.publish(agent, question.workspace, { kind: "answer", body: text, replyTo: questionId, source: "user" });
     return { workspace: question.workspace, post };
+  }
+
+  async addTodoAsUser(agent: string, ref: string, text: string): Promise<{ workspace: string; todo: Todo }> {
+    const { name, host } = await this.locate(ref);
+    const workspace = `${name}@${host}`;
+    await this.enterAsUser(agent, workspace);
+    return { workspace, todo: await this.todo(agent, workspace, { action: "add", text, source: "user" }) };
+  }
+
+  async changeTodoAsUser(agent: string, id: string, action: "done" | "reopen" | "remove"): Promise<{ workspace: string; todo: Todo }> {
+    const found = (await this.allTodos(true)).find((t) => t.todo.id === id);
+    if (found === undefined) throw new Error(`no todo ${id}`);
+    await this.enterAsUser(agent, found.workspace);
+    return { workspace: found.workspace, todo: await this.todo(agent, found.workspace, { action, id }) };
   }
 
   handlePeer(peer: Peer, op: string, payload: unknown): unknown {
@@ -527,6 +659,11 @@ export class Workspaces {
     if (op === "questions") {
       this.requireAnyMemberFrom(workspace, peer);
       return this.hostQuestions(workspace);
+    }
+    const all = body.data.all === true;
+    if (op === "todos" && body.data.agent === undefined) {
+      this.requireAnyMemberFrom(workspace, peer);
+      return this.hostTodos(workspace, all);
     }
     if (op === "notify") {
       this.receiveNotice(peer, payload);
@@ -553,6 +690,11 @@ export class Workspaces {
       case "follow":
         this.hostFollow(workspace, address, z.string().parse(extra.post), extra.on === true);
         return { ok: true };
+      case "todos":
+        this.requireMember(workspace, address);
+        return this.hostTodos(workspace, all);
+      case "todo":
+        return this.hostTodo(workspace, address, extra.change);
       case "info":
         this.requireMember(workspace, address);
         return this.hostInfo(workspace);

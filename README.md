@@ -94,6 +94,8 @@ that created it; agents elsewhere join it as `name@machine` (joining from an `un
 - **Questions:** the desk (the creator, or `/bridge workspace <name> desk <agent>`) answers what it can from the
   workspace and asks you the rest with its own question tool. `/bridge questions` and `/bridge answer <id> <text>`
   work from any session.
+- **Todos:** every workspace has a todo list. Agents see it in `workspace_read`, add to it when you ask them to and
+  tick off what they finished; you manage it with the commands below. Changes wake nobody.
 - **Trust:** a post never counts as more trusted than the machine that hosts the workspace. An answer only counts
   as yours when its source is `user` and its trust is local or trusted.
 
@@ -104,12 +106,15 @@ that created it; agents elsewhere join it as `name@machine` (joining from an `un
 | `/bridge workspace <name> desk <agent>` | Change the desk |
 | `/bridge questions` | Open questions in all your workspaces |
 | `/bridge answer <id> <text>` | Answer one |
+| `/bridge todo <workspace> <text>` | Add a todo |
+| `/bridge todos [workspace]` | Open todos in one or all workspaces |
+| `/bridge done <id>` / `undo <id>` / `drop <id>` | Tick off, reopen or remove a todo |
 
 ### Tools for the agent
 
 `send`, `reply`, `inbox`, `read`, `ack`, `wait`, `fetch_attachment`, `peers`, `conversations`, `discover`, and
 `workspace_create`, `workspace_join`, `workspace_leave`, `workspace_post`, `workspace_read`, `workspace_mode`,
-`workspace_follow`, `workspaces`.
+`workspace_follow`, `workspace_todo`, `workspaces`.
 
 `discover` finds other agent-bridge machines on your local networks, Tailscale peers and any ranges listed under
 `discover` in the config.

@@ -321,6 +321,11 @@ export function agentServer(bridge: Bridge, agent: string): McpServer {
   commandPrompt("workspace", ["action", "name", "agent"], "List workspaces, or: new <name>, or: <name> desk <agent>.");
   commandPrompt("questions", [], "Open user questions in all workspaces.");
   commandPrompt("answer", ["id", "text"], "Answer a workspace question as the user.");
+  commandPrompt("todo", ["workspace", "text"], "Add a todo to a workspace.");
+  commandPrompt("todos", ["workspace"], "Open todos in one or all workspaces.");
+  commandPrompt("done", ["id"], "Tick off a workspace todo.");
+  commandPrompt("undo", ["id"], "Reopen a workspace todo.");
+  commandPrompt("drop", ["id"], "Remove a workspace todo.");
 
   server.registerTool(
     "discover",
@@ -413,10 +418,41 @@ export function agentServer(bridge: Bridge, agent: string): McpServer {
   server.registerTool(
     "workspace_read",
     {
-      description: "Read the posts you have not read yet in a workspace (all: true for the whole history). Each post has its trust.",
+      description:
+        "Read the posts you have not read yet in a workspace (all: true for the whole history) and its open todos. " +
+        "Each post and todo has its trust.",
       inputSchema: { workspace: workspaceRef, all: z.boolean().optional() },
     },
-    async ({ workspace, all }) => result(await bridge.workspaces.read(agent, workspace, all ?? false)),
+    async ({ workspace, all }) =>
+      result({
+        posts: await bridge.workspaces.read(agent, workspace, all ?? false),
+        todos: await bridge.workspaces.todos(agent, workspace, false),
+      }),
+  );
+
+  server.registerTool(
+    "workspace_todo",
+    {
+      description:
+        "The workspace's todo list. list (all: true includes finished ones), add (text; only when the user asks you to), " +
+        "done and reopen (id), remove (id). Changes wake nobody.",
+      inputSchema: {
+        workspace: workspaceRef,
+        action: z.enum(["list", "add", "done", "reopen", "remove"]),
+        text: z.string().optional(),
+        id: z.string().optional(),
+        all: z.boolean().optional(),
+      },
+    },
+    async ({ workspace, action, text, id, all }) => {
+      if (action === "list") return result(await bridge.workspaces.todos(agent, workspace, all ?? false));
+      if (action === "add") {
+        if (text === undefined) throw new Error("add needs text");
+        return result(await bridge.workspaces.todo(agent, workspace, { action, text }));
+      }
+      if (id === undefined) throw new Error(`${action} needs the todo id`);
+      return result(await bridge.workspaces.todo(agent, workspace, { action, id }));
+    },
   );
 
   server.registerTool(

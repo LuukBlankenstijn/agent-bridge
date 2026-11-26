@@ -82,7 +82,7 @@ function workspace(bridge: Bridge, agent: string, args: string[]): string {
     .map((r) => {
       const info = bridge.workspaces.hostInfo(String(r.name));
       const members = info.members.map((m) => `${m.address}${m.status === "pending" ? " (waiting)" : ` (${m.mode})`}`);
-      return `${String(r.name)}: desk ${info.desk}; ${members.join(", ")}`;
+      return `${String(r.name)}: desk ${info.desk}; ${info.openTodos} open todo(s); ${members.join(", ")}`;
     })
     .join("\n");
 }
@@ -92,6 +92,16 @@ async function questions(bridge: Bridge): Promise<string> {
   if (open.length === 0) return "No open questions.";
   return open.map((q) => `${q.post.id}  ${q.workspace}  ${q.post.author}: ${q.post.body}`).join("\n");
 }
+
+async function todos(bridge: Bridge, ref: string | undefined): Promise<string> {
+  const open = (await bridge.workspaces.allTodos(false)).filter((t) => ref === undefined || t.workspace === ref || t.workspace.startsWith(`${ref}@`));
+  if (open.length === 0) return `No open todos${ref === undefined ? "" : ` in ${ref}`}.`;
+  return open
+    .map(({ workspace, todo }) => `${todo.id}  ${workspace}  ${todo.text}  (${todo.source === "user" ? "you" : `${todo.addedBy}, ${todo.trust}`})`)
+    .join("\n");
+}
+
+const TODO_ACTIONS = { done: ["done", "Ticked off"], undo: ["reopen", "Reopened"], drop: ["remove", "Removed"] } as const;
 
 export async function runCommand(bridge: Bridge, agent: string, text: string): Promise<string> {
   const [sub, ...args] = text.trim().split(/\s+/).filter(Boolean);
@@ -119,6 +129,21 @@ export async function runCommand(bridge: Bridge, agent: string, text: string): P
         if (id === undefined || words.length === 0) return `Usage: /bridge ${SUBCOMMANDS.answer.usage}`;
         const answered = await bridge.workspaces.answerAsUser(agent, id, text.trim().split(/\s+/).slice(2).join(" "));
         return `Answered question ${id} in ${answered.workspace}.`;
+      }
+      case "todo": {
+        if (args.length < 2) return `Usage: /bridge ${SUBCOMMANDS.todo.usage}`;
+        const added = await bridge.workspaces.addTodoAsUser(agent, args[0], text.trim().split(/\s+/).slice(2).join(" "));
+        return `Added todo ${added.todo.id} to ${added.workspace}.`;
+      }
+      case "todos":
+        return await todos(bridge, args[0]);
+      case "done":
+      case "undo":
+      case "drop": {
+        if (args[0] === undefined) return `Usage: /bridge ${SUBCOMMANDS[sub].usage}`;
+        const [action, verb] = TODO_ACTIONS[sub];
+        const changed = await bridge.workspaces.changeTodoAsUser(agent, args[0], action);
+        return `${verb} "${changed.todo.text}" in ${changed.workspace}.`;
       }
       case "revoke":
         if (args[0] === undefined) return `Usage: /bridge ${SUBCOMMANDS.revoke.usage}`;
@@ -167,6 +192,20 @@ export function completeCommand(bridge: Bridge, agent: string, prefix: string): 
       ...waiting().map((r) => ({ label: r.thread, value: r.thread, description: `${r.from}: ${r.subject}` })),
       ...[...new Set(waiting().map((r) => r.node))].map((node) => ({ label: node, value: node, description: "all from this machine" })),
     ]);
+  }
+  const hosted = () => bridge.store.db.prepare("SELECT name FROM ws_workspaces ORDER BY name").all().map((r) => String(r.name));
+  if ((sub === "todo" || sub === "todos") && words.length === 1) {
+    return options(hosted().map((name) => ({ label: name, value: name, description: "workspace" })));
+  }
+  if ((sub === "done" || sub === "undo" || sub === "drop") && words.length === 1) {
+    return options(
+      hosted().flatMap((name) =>
+        bridge.workspaces
+          .hostTodos(name, true)
+          .filter((t) => t.done === (sub === "undo"))
+          .map((t) => ({ label: t.id, value: t.id, description: `${name}: ${t.text}` })),
+      ),
+    );
   }
   if (sub === "revoke" && words.length === 1) {
     return options(
