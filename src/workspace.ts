@@ -645,9 +645,18 @@ export class Workspaces {
     return { workspace, todo: await this.todo(agent, workspace, { action: "add", text, source: "user" }) };
   }
 
-  async changeTodoAsUser(agent: string, id: string, action: "done" | "reopen" | "remove"): Promise<{ workspace: string; todo: Todo }> {
-    const found = (await this.allTodos(true)).find((t) => t.todo.id === id);
-    if (found === undefined) throw new Error(`no todo ${id}`);
+  async changeTodoAsUser(
+    agent: string,
+    id: string,
+    action: "done" | "reopen" | "remove",
+    ref?: string,
+  ): Promise<{ workspace: string; todo: Todo }> {
+    const matches = (await this.allTodos(true)).filter(
+      (t) => t.todo.id === id && (ref === undefined || t.workspace === ref || t.workspace.startsWith(`${ref}@`)),
+    );
+    if (matches.length === 0) throw new Error(`no todo ${id}${ref === undefined ? "" : ` in ${ref}`}`);
+    if (matches.length > 1) throw new Error(`todo ${id} exists in ${matches.map((m) => m.workspace).join(" and ")}; add the workspace`);
+    const found = matches[0];
     await this.enterAsUser(agent, found.workspace);
     return { workspace: found.workspace, todo: await this.todo(agent, found.workspace, { action, id }) };
   }

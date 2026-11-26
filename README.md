@@ -108,7 +108,7 @@ that created it; agents elsewhere join it as `name@machine` (joining from an `un
 | `/bridge answer <id> <text>` | Answer one |
 | `/bridge todo <workspace> <text>` | Add a todo |
 | `/bridge todos [workspace]` | Open todos in one or all workspaces |
-| `/bridge done <id>` / `undo <id>` / `drop <id>` | Tick off, reopen or remove a todo |
+| `/bridge done <id>` / `undo <id>` / `drop <id>` | Tick off, reopen or remove a todo (add the workspace if the id is ambiguous) |
 
 ### Tools for the agent
 

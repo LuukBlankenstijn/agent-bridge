@@ -1,5 +1,6 @@
 import type { Bridge } from "./bridge.js";
 import { saveConfig } from "./config.js";
+import { neutraliseTags, type Trust } from "./events.js";
 import { resolveListen } from "./discovery.js";
 import { MACHINE_LEVELS, type MachineLevel } from "./store.js";
 import { SUBCOMMANDS } from "./usage.js";
@@ -90,14 +91,18 @@ function workspace(bridge: Bridge, agent: string, args: string[]): string {
 async function questions(bridge: Bridge): Promise<string> {
   const open = await bridge.workspaces.questions();
   if (open.length === 0) return "No open questions.";
-  return open.map((q) => `${q.post.id}  ${q.workspace}  ${q.post.author}: ${q.post.body}`).join("\n");
+  return open.map((q) => `${q.post.id}  ${q.workspace}  ${q.post.author}: ${oneLine(q.post.body)}`).join("\n");
 }
+
+const oneLine = (text: string) => neutraliseTags(text.replace(/\s+/g, " "));
+
+const fromUser = (todo: { source: string | null; trust: Trust }) => todo.source === "user" && todo.trust !== "untrusted";
 
 async function todos(bridge: Bridge, ref: string | undefined): Promise<string> {
   const open = (await bridge.workspaces.allTodos(false)).filter((t) => ref === undefined || t.workspace === ref || t.workspace.startsWith(`${ref}@`));
   if (open.length === 0) return `No open todos${ref === undefined ? "" : ` in ${ref}`}.`;
   return open
-    .map(({ workspace, todo }) => `${todo.id}  ${workspace}  ${todo.text}  (${todo.source === "user" ? "you" : `${todo.addedBy}, ${todo.trust}`})`)
+    .map(({ workspace, todo }) => `${todo.id}  ${workspace}  ${oneLine(todo.text)}  (${fromUser(todo) ? "you" : `${todo.addedBy}, ${todo.trust}`})`)
     .join("\n");
 }
 
@@ -142,8 +147,8 @@ export async function runCommand(bridge: Bridge, agent: string, text: string): P
       case "drop": {
         if (args[0] === undefined) return `Usage: /bridge ${SUBCOMMANDS[sub].usage}`;
         const [action, verb] = TODO_ACTIONS[sub];
-        const changed = await bridge.workspaces.changeTodoAsUser(agent, args[0], action);
-        return `${verb} "${changed.todo.text}" in ${changed.workspace}.`;
+        const changed = await bridge.workspaces.changeTodoAsUser(agent, args[0], action, args[1]);
+        return `${verb} "${oneLine(changed.todo.text)}" in ${changed.workspace}.`;
       }
       case "revoke":
         if (args[0] === undefined) return `Usage: /bridge ${SUBCOMMANDS.revoke.usage}`;

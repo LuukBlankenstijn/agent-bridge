@@ -423,11 +423,10 @@ export function agentServer(bridge: Bridge, agent: string): McpServer {
         "Each post and todo has its trust.",
       inputSchema: { workspace: workspaceRef, all: z.boolean().optional() },
     },
-    async ({ workspace, all }) =>
-      result({
-        posts: await bridge.workspaces.read(agent, workspace, all ?? false),
-        todos: await bridge.workspaces.todos(agent, workspace, false),
-      }),
+    async ({ workspace, all }) => {
+      const todos = await bridge.workspaces.todos(agent, workspace, false).catch((error: unknown) => ({ error: String(error) }));
+      return result({ posts: await bridge.workspaces.read(agent, workspace, all ?? false), todos });
+    },
   );
 
   server.registerTool(
